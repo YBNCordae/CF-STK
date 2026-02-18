@@ -151,29 +151,74 @@ function buildSummary(items) {
 
 /** ----------------- Utils ----------------- **/
 
+function toEastmoneySecid(ts_code) {
+  const [code, ex] = ts_code.split(".");
+  let market = "0"; // 默认深
+  if (ex === "SH") market = "1";
+  else if (ex === "SZ") market = "0";
+  else if (ex === "BJ") market = "0"; // BJ 在东财很多接口用 0，这里保守
+  return `${market}.${code}`;
+}
+
+
 async function fetchCnNameEastmoney(ts_code) {
   const secid = toEastmoneySecid(ts_code);
-  const params = new URLSearchParams({
-    ut: "fa5fd1943c7b386f172d6893dbfba10b",
-    fltt: "2",
-    invt: "2",
-    fields: "f14", // 中文名
-    secid,
-  });
 
-  const url = `https://push2.eastmoney.com/api/qt/stock/get?${params.toString()}`;
-  const r = await fetch(url, {
-    headers: {
-      "user-agent": "Mozilla/5.0",
-      "referer": "https://quote.eastmoney.com/",
-      "accept": "application/json, text/plain, */*",
-    },
-  });
-  if (!r.ok) return null;
+  // 1) 优先：stock/get 直接取 f14
+  try {
+    const params = new URLSearchParams({
+      ut: "fa5fd1943c7b386f172d6893dbfba10b",
+      fltt: "2",
+      invt: "2",
+      fields: "f14",
+      secid,
+    });
+    const url = `https://push2.eastmoney.com/api/qt/stock/get?${params.toString()}`;
+    const r = await fetch(url, {
+      headers: {
+        "user-agent": "Mozilla/5.0",
+        "referer": "https://quote.eastmoney.com/",
+        "accept": "application/json, text/plain, */*",
+      },
+    });
+    if (r.ok) {
+      const j = await r.json();
+      const name = j?.data?.f14;
+      if (typeof name === "string" && name.trim()) return name.trim();
+    }
+  } catch (_) {}
 
-  const j = await r.json();
-  const name = j?.data?.f14;
-  return typeof name === "string" && name.trim() ? name.trim() : null;
+  // 2) 兜底：suggest 搜索（用代码更稳）
+  try {
+    const code = ts_code.split(".")[0];
+    const params2 = new URLSearchParams({
+      input: code, // 600519
+      type: "14",
+      token: "ff9f9b2c1a1f4b9d", // 常见 token（无需登录）
+      count: "5",
+    });
+    const url2 = `https://searchapi.eastmoney.com/api/suggest/get?${params2.toString()}`;
+    const r2 = await fetch(url2, {
+      headers: {
+        "user-agent": "Mozilla/5.0",
+        "referer": "https://quote.eastmoney.com/",
+        "accept": "application/json, text/plain, */*",
+      },
+    });
+    if (!r2.ok) return null;
+    const j2 = await r2.json();
+
+    // 返回结构一般是: { QuotationCodeTable: { Data: [ { Name, Code, ... } ] } }
+    const arr = j2?.QuotationCodeTable?.Data;
+    if (Array.isArray(arr) && arr.length) {
+      // 尽量匹配 code
+      const hit = arr.find(x => String(x?.Code) === code) || arr[0];
+      const name = hit?.Name;
+      if (typeof name === "string" && name.trim()) return name.trim();
+    }
+  } catch (_) {}
+
+  return null;
 }
 
 
