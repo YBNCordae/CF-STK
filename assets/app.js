@@ -428,7 +428,7 @@ function exportXlsx() {
   // ====== Sheet1：查询概览 ======
   const rows = [
     ["股票代码", s.ts_code],
-    ["股票代码", s.ts_code ],
+    ["股票名字", s.name_cn ],
     ["区间选择", s.mode === "n" ? "最近N个交易日" : "自定义起止日期"],
     ["区间开始", cnDate(s.start)],
     ["区间结束（最新交易日）", cnDate(s.end)],
