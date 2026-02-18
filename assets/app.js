@@ -245,6 +245,7 @@ function renderSummary(s, buyInfo) {
 
   setSummary(`
     <div class="krow">
+      <div>股票：<b>${(s.name_cn || "-")}（${(s.ts_code || "-")}）</b></div>
       <div>截至：<b>${cn(s.end)}</b></div>
       <div>今日收盘价：<b>${f2(s.today_close)}</b></div>
       <div>区间均值：<b>${f2(s.mean)}</b>（${pct(s.dev_vs_mean)} 相对均值）</div>
