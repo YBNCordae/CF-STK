@@ -160,9 +160,10 @@ function renderCharts(items, s) {
   const x = items.map(i => toDateObj(i.trade_date));
   const y = items.map(i => i.close);
 
-  const high = s.high;
-  const low = s.low;
-  const mean = s.mean;
+  const high = Number.isFinite(s?.high) ? s.high : Math.max(...y);
+  const low  = Number.isFinite(s?.low)  ? s.low  : Math.min(...y);
+  const mean = Number.isFinite(s?.mean) ? s.mean : (y.reduce((a,b)=>a+b,0) / y.length);
+
 
   const highIdx = y.indexOf(high);
   const lowIdx = y.indexOf(low);
