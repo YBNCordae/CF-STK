@@ -144,6 +144,9 @@ async function runQuery() {
     }
 
 const summary2 = normalizeSummary(payload.summary, payload.items, payload.ts_code);
+summary2.name_cn = summary2.name_cn ?? payload.name_cn ?? "";
+summary2.ts_code = summary2.ts_code ?? payload.ts_code ?? "";
+
 
 lastPayload = { ...payload, summary: summary2 };   // ✅ 导出Excel也会用到这个
 disableDownloads(false);
