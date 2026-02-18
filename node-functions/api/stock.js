@@ -63,11 +63,14 @@ export default async function onRequest(context) {
 /** ----------------- Eastmoney Kline ----------------- **/
 
 function toEastmoneySecid(ts_code) {
-  // ts_code: "600519.SH" / "000001.SZ" / "430047.BJ"
   const [code, ex] = ts_code.split(".");
-  const market = ex === "SH" ? "1" : "0"; // 常用映射：沪=1，深/北=0
+  let market = "0"; // 默认深
+  if (ex === "SH") market = "1";
+  else if (ex === "SZ") market = "0";
+  else if (ex === "BJ") market = "0"; // BJ 在东财很多接口用 0，这里保守
   return `${market}.${code}`;
 }
+
 
 async function fetchKlineEastmoney(ts_code, beg, end) {
   const secid = toEastmoneySecid(ts_code);
@@ -151,14 +154,6 @@ function buildSummary(items) {
 
 /** ----------------- Utils ----------------- **/
 
-function toEastmoneySecid(ts_code) {
-  const [code, ex] = ts_code.split(".");
-  let market = "0"; // 默认深
-  if (ex === "SH") market = "1";
-  else if (ex === "SZ") market = "0";
-  else if (ex === "BJ") market = "0"; // BJ 在东财很多接口用 0，这里保守
-  return `${market}.${code}`;
-}
 
 
 async function fetchCnNameEastmoney(ts_code) {
