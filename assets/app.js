@@ -7,6 +7,11 @@ document.getElementById("btn").onclick = runQuery;
 document.getElementById("downloadCsv").onclick = downloadCsv;
 document.getElementById("exportXlsx").onclick = exportXlsx;
 
+function f2(v) {
+  return Number.isFinite(v) ? v.toFixed(2) : "-";
+}
+
+
 function initDefaults() {
   // 默认 end = 今天（按浏览器本地），start/end 仅用于自定义模式；N模式会在 runQuery 时自动算范围
   const today = new Date();
@@ -169,10 +174,10 @@ function renderCharts(items, s) {
     { x: [x[x.length-1]], y: [y[y.length-1]], type:"scatter", mode:"markers", name:"最新收盘",
       hovertemplate: "最新收盘<br>日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>" },
     { x: [x[highIdx]], y: [high], type:"scatter", mode:"markers+text", name:"区间最高",
-      text:[`最高 ${high.toFixed(2)}`], textposition:"top center",
+      text:[`最高 ${high.f2(2)}`], textposition:"top center",
       hovertemplate: "区间最高<br>日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>" },
     { x: [x[lowIdx]], y: [low], type:"scatter", mode:"markers+text", name:"区间最低",
-      text:[`最低 ${low.toFixed(2)}`], textposition:"bottom center",
+      text:[`最低 ${low.f2(2)}`], textposition:"bottom center",
       hovertemplate: "区间最低<br>日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>" },
   ];
 
@@ -193,9 +198,9 @@ function renderCharts(items, s) {
       }))
     ],
     annotations: [
-      { x:x[x.length-1], y:mean, xref:"x", yref:"y", text:`均值：${mean.toFixed(2)}`, showarrow:false, xanchor:"left" },
-      { x:x[x.length-1], y:high, xref:"x", yref:"y", text:`最高：${high.toFixed(2)}`, showarrow:false, xanchor:"left" },
-      { x:x[x.length-1], y:low,  xref:"x", yref:"y", text:`最低：${low.toFixed(2)}`,  showarrow:false, xanchor:"left" },
+      { x:x[x.length-1], y:mean, xref:"x", yref:"y", text:`均值：${mean.f2(2)}`, showarrow:false, xanchor:"left" },
+      { x:x[x.length-1], y:high, xref:"x", yref:"y", text:`最高：${high.f2(2)}`, showarrow:false, xanchor:"left" },
+      { x:x[x.length-1], y:low,  xref:"x", yref:"y", text:`最低：${low.f2(2)}`,  showarrow:false, xanchor:"left" },
     ],
     legend: { orientation:"h", y:1.12, x:1, xanchor:"right" }
   };
