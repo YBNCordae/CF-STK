@@ -157,51 +157,80 @@ function renderSummary(s, buyInfo) {
 function renderCharts(items, s) {
   if (!items || !items.length) return;
 
-  const x = items.map(i => toDateObj(i.trade_date));
-  const y = items.map(i => i.close);
+  const f2 = (v) => (Number.isFinite(v) ? Number(v).toFixed(2) : "-");
 
+  const x = items.map(i => toDateObj(i.trade_date));
+  const yAll = items.map(i => i.close);
+  const y = yAll.filter(v => Number.isFinite(v));
+  if (!y.length) return;
+
+  // summary 没给/字段名不一致时，用 y 自己算
   const high = Number.isFinite(s?.high) ? s.high : Math.max(...y);
   const low  = Number.isFinite(s?.low)  ? s.low  : Math.min(...y);
   const mean = Number.isFinite(s?.mean) ? s.mean : (y.reduce((a,b)=>a+b,0) / y.length);
 
+  // index 找不到就兜底到最后一天，避免 x[ -1 ] 变 undefined
+  const highIdx0 = yAll.indexOf(high);
+  const lowIdx0  = yAll.indexOf(low);
+  const highIdx = highIdx0 >= 0 ? highIdx0 : (x.length - 1);
+  const lowIdx  = lowIdx0  >= 0 ? lowIdx0  : (x.length - 1);
 
-  const highIdx = y.indexOf(high);
-  const lowIdx = y.indexOf(low);
-
-  // 收盘价图
   const tracesClose = [
-    { x, y, type: "scatter", mode: "lines", name: "收盘价",
-      hovertemplate: "日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>" },
-    { x: [x[x.length-1]], y: [y[y.length-1]], type:"scatter", mode:"markers", name:"最新收盘",
-      hovertemplate: "最新收盘<br>日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>" },
-    { x: [x[highIdx]], y: [high], type:"scatter", mode:"markers+text", name:"区间最高",
-      text:[`最高 ${high.f2(2)}`], textposition:"top center",
-      hovertemplate: "区间最高<br>日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>" },
-    { x: [x[lowIdx]], y: [low], type:"scatter", mode:"markers+text", name:"区间最低",
-      text:[`最低 ${low.f2(2)}`], textposition:"bottom center",
-      hovertemplate: "区间最低<br>日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>" },
+    {
+      x, y: yAll,
+      type: "scatter",
+      mode: "lines",
+      name: "收盘价",
+      hovertemplate: "日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>"
+    },
+    {
+      x: [x[x.length - 1]],
+      y: [yAll[yAll.length - 1]],
+      type: "scatter",
+      mode: "markers",
+      name: "最新收盘",
+      hovertemplate: "最新收盘<br>日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>"
+    },
+    {
+      x: [x[highIdx]],
+      y: [high],
+      type: "scatter",
+      mode: "markers+text",
+      name: "区间最高",
+      text: [`最高 ${f2(high)}`],
+      textposition: "top center",
+      hovertemplate: "区间最高<br>日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>"
+    },
+    {
+      x: [x[lowIdx]],
+      y: [low],
+      type: "scatter",
+      mode: "markers+text",
+      name: "区间最低",
+      text: [`最低 ${f2(low)}`],
+      textposition: "bottom center",
+      hovertemplate: "区间最低<br>日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>"
+    },
   ];
 
   const layoutClose = {
-    title: `${s.ts_code}｜区间 ${cnDate(s.start)} ~ ${cnDate(s.end)}｜共 ${s.count} 个交易日`,
+    title: `${s?.ts_code || ""}｜区间 ${cnDate(s?.start || s?.start_date || "")} ~ ${cnDate(s?.end || s?.end_date || "")}｜共 ${s?.count ?? items.length} 个交易日`,
     margin: { l: 40, r: 20, t: 60, b: 40 },
     xaxis: { title: "日期" },
     yaxis: { title: "收盘价" },
     hovermode: "x unified",
     shapes: [
-      // 区间范围带
       { type:"rect", xref:"x", yref:"y", x0:x[0], x1:x[x.length-1], y0:low, y1:high,
         fillcolor:"rgba(0,0,0,0.05)", line:{ width:0 }, layer:"below" },
-      // 均值/高/低 线
       ...[mean, high, low].map(v => ({
         type:"line", xref:"x", yref:"y", x0:x[0], x1:x[x.length-1], y0:v, y1:v,
         line:{ width:1, dash:"dot" }
       }))
     ],
     annotations: [
-      { x:x[x.length-1], y:mean, xref:"x", yref:"y", text:`均值：${mean.f2(2)}`, showarrow:false, xanchor:"left" },
-      { x:x[x.length-1], y:high, xref:"x", yref:"y", text:`最高：${high.f2(2)}`, showarrow:false, xanchor:"left" },
-      { x:x[x.length-1], y:low,  xref:"x", yref:"y", text:`最低：${low.f2(2)}`,  showarrow:false, xanchor:"left" },
+      { x:x[x.length-1], y:mean, xref:"x", yref:"y", text:`均值：${f2(mean)}`, showarrow:false, xanchor:"left" },
+      { x:x[x.length-1], y:high, xref:"x", yref:"y", text:`最高：${f2(high)}`, showarrow:false, xanchor:"left" },
+      { x:x[x.length-1], y:low,  xref:"x", yref:"y", text:`最低：${f2(low)}`,  showarrow:false, xanchor:"left" },
     ],
     legend: { orientation:"h", y:1.12, x:1, xanchor:"right" }
   };
@@ -209,17 +238,22 @@ function renderCharts(items, s) {
   Plotly.newPlot("chartClose", tracesClose, layoutClose, { displayModeBar: false, responsive: true });
 
   // 换手率图（柱状）
-  const x2 = x;
-  const tor = items.map(i => (i.turnover_rate == null ? null : i.turnover_rate)); // 单位：%
+  const tor = items.map(i => (i.turnover_rate == null ? null : i.turnover_rate));
   Plotly.newPlot("chartTor", [
-    { x: x2, y: tor, type:"bar", name:"换手率（%）",
-      hovertemplate: "日期=%{x|%Y年%m月%d日}<br>换手率=%{y:.2f}%<extra></extra>" }
+    {
+      x,
+      y: tor,
+      type: "bar",
+      name: "换手率（%）",
+      hovertemplate: "日期=%{x|%Y年%m月%d日}<br>换手率=%{y:.2f}%<extra></extra>"
+    }
   ], {
     margin: { l: 40, r: 20, t: 10, b: 40 },
     xaxis: { title: "日期" },
     yaxis: { title: "换手率（%）" },
   }, { displayModeBar: false, responsive: true });
 }
+
 
 function renderTable(items) {
   const rows = items.slice().reverse(); // 最近在上
