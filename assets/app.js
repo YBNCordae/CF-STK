@@ -11,6 +11,78 @@ function f2(v) {
   return Number.isFinite(v) ? v.toFixed(2) : "-";
 }
 
+function normalizeSummary(summary, items, ts_code) {
+  const s = { ...(summary || {}) };
+
+  // 基本字段（兼容你现在的后端字段名）
+  s.ts_code = s.ts_code ?? ts_code ?? "";
+  s.start = s.start ?? s.start_date ?? (items?.[0]?.trade_date || "");
+  s.end   = s.end   ?? s.end_date   ?? (items?.[items.length - 1]?.trade_date || "");
+  s.count = s.count ?? items?.length ?? 0;
+
+  s.today_close = s.today_close ?? s.close_latest ?? null;
+  s.mean        = s.mean        ?? s.close_mean   ?? null;
+  s.high        = s.high        ?? s.close_max    ?? null;
+  s.low         = s.low         ?? s.close_min    ?? null;
+
+  s.turnover_latest = s.turnover_latest ?? s.tor_latest ?? null;
+  s.turnover_mean   = s.turnover_mean   ?? s.tor_mean   ?? null;
+  s.turnover_max    = s.turnover_max    ?? s.tor_max    ?? null;
+  s.turnover_min    = s.turnover_min    ?? s.tor_min    ?? null;
+
+  // ===== 用 items 补“对应日期” =====
+  if (Array.isArray(items) && items.length) {
+    let hi = -Infinity, lo = Infinity;
+    let hiDate = "", loDate = "";
+
+    let tMax = -Infinity, tMin = Infinity;
+    let tMaxDate = "", tMinDate = "";
+
+    for (const r of items) {
+      const c = Number(r.close);
+      if (Number.isFinite(c)) {
+        if (c > hi) { hi = c; hiDate = r.trade_date; }
+        if (c < lo) { lo = c; loDate = r.trade_date; }
+      }
+      const t = Number(r.turnover_rate);
+      if (Number.isFinite(t)) {
+        if (t > tMax) { tMax = t; tMaxDate = r.trade_date; }
+        if (t < tMin) { tMin = t; tMinDate = r.trade_date; }
+      }
+    }
+
+    // 如果后端没给这些日期，就用前端算的
+    s.high_date_short = s.high_date_short ?? (hiDate ? cnDate(hiDate) : "-");
+    s.low_date_short  = s.low_date_short  ?? (loDate ? cnDate(loDate) : "-");
+    s.turnover_max_date_short = s.turnover_max_date_short ?? (tMaxDate ? cnDate(tMaxDate) : "-");
+    s.turnover_min_date_short = s.turnover_min_date_short ?? (tMinDate ? cnDate(tMinDate) : "-");
+
+    // 如果后端高低值缺失，也顺便补一下（更稳）
+    if (!Number.isFinite(s.high) && hiDate) s.high = hi;
+    if (!Number.isFinite(s.low)  && loDate) s.low  = lo;
+    if (!Number.isFinite(s.turnover_max) && tMaxDate) s.turnover_max = tMax;
+    if (!Number.isFinite(s.turnover_min) && tMinDate) s.turnover_min = tMin;
+  }
+
+  // ===== 衍生指标（后端没给的话前端补算）=====
+  if (Number.isFinite(s.today_close) && Number.isFinite(s.mean) && !Number.isFinite(s.dev_vs_mean) && s.mean !== 0) {
+    s.dev_vs_mean = (s.today_close - s.mean) / s.mean;
+  }
+  if (Number.isFinite(s.high) && Number.isFinite(s.low) && !Number.isFinite(s.amplitude) && s.low !== 0) {
+    s.amplitude = (s.high - s.low) / s.low;
+  }
+  if (Number.isFinite(s.today_close) && Number.isFinite(s.low) && !Number.isFinite(s.rise_from_low) && s.low !== 0) {
+    s.rise_from_low = (s.today_close - s.low) / s.low;
+  }
+  if (Number.isFinite(s.today_close) && Number.isFinite(s.high) && !Number.isFinite(s.drawdown_from_high) && s.high !== 0) {
+    s.drawdown_from_high = (s.today_close - s.high) / s.high;
+  }
+  if (Number.isFinite(s.today_close) && Number.isFinite(s.high) && Number.isFinite(s.low) && !Number.isFinite(s.pos_pct) && (s.high - s.low) !== 0) {
+    s.pos_pct = ((s.today_close - s.low) / (s.high - s.low)) * 100;
+  }
+
+  return s;
+}
 
 function initDefaults() {
   // 默认 end = 今天（按浏览器本地），start/end 仅用于自定义模式；N模式会在 runQuery 时自动算范围
@@ -71,12 +143,15 @@ async function runQuery() {
       throw new Error(payload.msg || `HTTP ${r.status}`);
     }
 
-    lastPayload = payload;
-    disableDownloads(false);
-    renderSummary(payload.summary, getBuyInfo());
-    renderCharts(payload.items, { ...payload.summary, ts_code: payload.ts_code });
+const summary2 = normalizeSummary(payload.summary, payload.items, payload.ts_code);
 
-    renderTable(payload.items);
+lastPayload = { ...payload, summary: summary2 };   // ✅ 导出Excel也会用到这个
+disableDownloads(false);
+
+renderSummary(summary2, getBuyInfo());
+renderCharts(payload.items, summary2);
+renderTable(payload.items);
+
   } catch (e) {
     console.error(e);
     setSummary(`失败：${e.message || e}`);
