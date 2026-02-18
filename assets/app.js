@@ -33,41 +33,52 @@ async function runQuery() {
   setSummary("查询中…");
   disableDownloads(true);
 
-  const code = val("code");
-  const mode = getMode();
+  try {
+    const code = val("code");
+    const mode = getMode();
+    let start, end, n;
 
-  let start, end, n;
-  if (mode === "n") {
-    n = Number(val("n") || "60");
-    const today = new Date();
-    end = toYmd(today);
-    // 与你原逻辑一致：取足够长范围再截取最后 N 条
-    start = toYmd(addDays(today, -900));
-  } else {
-    start = val("start");
-    end = val("end");
-  }
+    if (mode === "n") {
+      n = Number(val("n") || "60");
+      const today = new Date();
+      end = toYmd(today);
+      start = toYmd(addDays(today, -900));
+    } else {
+      start = val("start");
+      end = val("end");
+    }
 
-  const qs = new URLSearchParams({ code, mode, start, end });
-  if (mode === "n") qs.set("n", String(n));
+    const qs = new URLSearchParams({ code, mode, start, end });
+    if (mode === "n") qs.set("n", String(n));
 
-  const r = await fetch(`/api/stock?${qs.toString()}`);
-  const payload = await r.json();
+    const r = await fetch(`/api/stock?${qs.toString()}`);
 
-  if (!payload.ok) {
-    setSummary(`失败：${payload.msg || "unknown"}`);
+    // ✅ 先读 text，再尝试 parse，避免 r.json() 直接抛导致 UI 卡死
+    const text = await r.text();
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      throw new Error(`接口返回不是JSON（HTTP ${r.status}）：` + text.slice(0, 200));
+    }
+
+    if (!r.ok || !payload.ok) {
+      throw new Error(payload.msg || `HTTP ${r.status}`);
+    }
+
+    lastPayload = payload;
+    disableDownloads(false);
+    renderSummary(payload.summary, getBuyInfo());
+    renderCharts(payload.items, payload.summary);
+    renderTable(payload.items);
+  } catch (e) {
+    console.error(e);
+    setSummary(`失败：${e.message || e}`);
     lastPayload = null;
     disableDownloads(true);
-    return;
   }
-
-  lastPayload = payload;
-  disableDownloads(false);
-
-  renderSummary(payload.summary, getBuyInfo());
-  renderCharts(payload.items, payload.summary);
-  renderTable(payload.items);
 }
+
 
 function getBuyInfo() {
   const buy = Number(val("buy") || "0");
