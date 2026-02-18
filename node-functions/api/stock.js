@@ -1,276 +1,188 @@
 export default async function onRequest(context) {
-  const u = new URL(context.request.url);
-  return new Response(
-    JSON.stringify({ ok: true, msg: "alive", query: Object.fromEntries(u.searchParams) }),
-    { headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }
-  );
+  try {
+    const u = new URL(context.request.url);
+    const sp = u.searchParams;
+
+    const rawCode = (sp.get("code") || "").trim();
+    const mode = (sp.get("mode") || "n").trim();
+
+    if (!rawCode) return json({ ok: false, msg: "需要 code 参数" }, 400);
+
+    // 统一成 ts_code 形态：600519.SH / 000001.SZ
+    const ts_code = normalizeTsCode(rawCode);
+
+    let start = (sp.get("start") || sp.get("start_date") || "").trim();
+    let end = (sp.get("end") || sp.get("end_date") || "").trim();
+    let n = (sp.get("n") || "").trim();
+
+    // mode=n：允许不传 start/end，后端自动补齐
+    if (mode === "n") {
+      if (!n) n = "60";
+      if (!end) end = ymd(new Date());
+      if (!start) start = ymd(addDays(new Date(), -900));
+    } else if (mode === "range") {
+      if (!start || !end) return json({ ok: false, msg: "mode=range 需要 start/end" }, 400);
+    } else {
+      return json({ ok: false, msg: "mode 只能是 n 或 range" }, 400);
+    }
+
+    // 拉取日K（包含收盘价 & 换手率）
+    const itemsAll = await fetchKlineEastmoney(ts_code, start, end);
+
+    if (!itemsAll.length) {
+      return json({ ok: false, msg: "数据为空：请检查代码/日期范围" }, 200);
+    }
+
+    // 如果是最近 N 个交易日，截取末尾 N 条
+    let items = itemsAll;
+    if (mode === "n") {
+      const nn = Math.max(1, Math.min(2000, parseInt(n, 10) || 60));
+      items = itemsAll.slice(-nn);
+    }
+
+    const summary = buildSummary(items);
+
+    return json({ ok: true, ts_code, mode, start, end, n: mode === "n" ? String(items.length) : null, summary, items }, 200);
+  } catch (e) {
+    return json({ ok: false, msg: String(e?.message || e) }, 500);
+  }
 }
 
+/** ----------------- Eastmoney Kline ----------------- **/
 
-// // functions/api/stock.js
-// export async function onRequestGet(context) {
-//   const { request, env } = context;
-//   const url = new URL(request.url);
+function toEastmoneySecid(ts_code) {
+  // ts_code: "600519.SH" / "000001.SZ" / "430047.BJ"
+  const [code, ex] = ts_code.split(".");
+  const market = ex === "SH" ? "1" : "0"; // 常用映射：沪=1，深/北=0
+  return `${market}.${code}`;
+}
 
-//   const codeRaw = (url.searchParams.get("code") || "").trim();
-//   const mode = (url.searchParams.get("mode") || "n").trim(); // n | range
-//   const n = Number(url.searchParams.get("n") || "60");
-//   const start = (url.searchParams.get("start") || "").trim(); // YYYYMMDD
-//   const end = (url.searchParams.get("end") || "").trim();     // YYYYMMDD
+async function fetchKlineEastmoney(ts_code, beg, end) {
+  const secid = toEastmoneySecid(ts_code);
 
-//   if (!codeRaw) return json({ ok: false, msg: "缺少参数 code" }, 400);
-//   if (!env.TUSHARE_TOKEN) return json({ ok: false, msg: "未配置环境变量 TUSHARE_TOKEN" }, 500);
+  // fields2:
+  // f51 日期 YYYY-MM-DD
+  // f52 开盘 f53 收盘 f54 最高 f55 最低 f56 成交量 f57 成交额
+  // f61 换手率(%) f62 振幅(%) f66 涨跌幅(%) f67 涨跌额
+  const params = new URLSearchParams({
+    fields1: "f1,f2,f3,f4,f5,f6",
+    fields2: "f51,f52,f53,f54,f55,f56,f57,f61",
+    ut: "7eea3edcaed734bea9cbfc24409ed989",
+    klt: "101", // 日K
+    fqt: "0",   // 不复权
+    beg,
+    end,
+    secid,
+  });
 
-//   // ====== cache (15 min) ======
-//   const cache = caches.default;
-//   const cacheKey = new Request(url.toString(), { method: "GET" });
-//   const cached = await cache.match(cacheKey);
-//   if (cached) return cached;
+  const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?${params.toString()}`;
+  const r = await fetch(url, {
+    headers: {
+      "user-agent": "Mozilla/5.0",
+      "referer": "https://quote.eastmoney.com/",
+      "accept": "application/json, text/plain, */*",
+    },
+  });
 
-//   const ts_code = toTsCode(codeRaw);
+  if (!r.ok) throw new Error(`Eastmoney HTTP ${r.status}`);
 
-//   // mode=n：后端也支持（前端通常会把 start/end 计算好传过来）
-//   let startDate = start, endDate = end;
-//   if (mode === "n") {
-//     if (!startDate || !endDate || !Number.isFinite(n) || n <= 0) {
-//       return json({ ok: false, msg: "mode=n 需要 start/end/n" }, 400);
-//     }
-//   } else {
-//     if (!startDate || !endDate) return json({ ok: false, msg: "mode=range 需要 start/end" }, 400);
-//   }
+  const j = await r.json();
+  const klines = j?.data?.klines || [];
 
-//   try {
-//     // 1) daily：收盘价
-//     const daily = await callTuShare(
-//       env.TUSHARE_TOKEN,
-//       "daily",
-//       { ts_code, start_date: startDate, end_date: endDate },
-//       "trade_date,close"
-//     );
+  // 每条： "2024-01-02,open,close,high,low,vol,amt,turnover"
+  const out = [];
+  for (const line of klines) {
+    const p = String(line).split(",");
+    const date = (p[0] || "").replace(/-/g, ""); // YYYYMMDD
+    const close = numOrNull(p[2]);
+    const tor = numOrNull(p[7]); // f61
+    if (date && Number.isFinite(close)) {
+      out.push({
+        trade_date: date,
+        close,
+        turnover_rate: Number.isFinite(tor) ? tor : null,
+      });
+    }
+  }
 
-//     if (!daily.length) {
-//       const resp = json({ ok: true, items: [], summary: null }, 200, { "Cache-Control": "public, max-age=300" });
-//       context.waitUntil(cache.put(cacheKey, resp.clone()));
-//       return resp;
-//     }
+  // 确保按日期升序
+  out.sort((a, b) => a.trade_date.localeCompare(b.trade_date));
+  return out;
+}
 
-//     // 2) daily_basic：换手率（%）
-//     // 字段：turnover_rate（换手率%）来自 TuShare 文档
-//     // const basics = await callTuShare(
-//     //   env.TUSHARE_TOKEN,
-//     //   "daily_basic",
-//     //   { ts_code, start_date: startDate, end_date: endDate },
-//     //   "trade_date,turnover_rate"
-//     // );
+/** ----------------- Summary ----------------- **/
 
-//     // 2) turnover_rate：改用东方财富 K 线接口字段 f61（换手率%）
-//     const torMap = await fetchTurnoverEastmoney(ts_code, startDate, endDate);
+function buildSummary(items) {
+  const closes = items.map(x => x.close).filter(Number.isFinite);
+  const tors = items.map(x => x.turnover_rate).filter(Number.isFinite);
 
-//     // 3) merge + sort asc
-//     let items = daily
-//       .map(r => ({
-//         trade_date: r.trade_date,
-//         close: numOrNull(r.close),
-//         turnover_rate: torMap.has(r.trade_date) ? torMap.get(r.trade_date) : null,
-//       }))
-//       .filter(x => Number.isFinite(x.close))
-//       .sort((a, b) => a.trade_date.localeCompare(b.trade_date));
+  const last = items[items.length - 1];
+  const latest_close = last?.close ?? null;
+  const latest_tor = last?.turnover_rate ?? null;
 
-//     // mode=n：取最后 n 个交易日
-//     if (mode === "n") {
-//       if (items.length < n) {
-//         return json({ ok: false, msg: `数据不足：仅 ${items.length} 条，少于 N=${n}` }, 400);
-//       }
-//       items = items.slice(items.length - n);
-//     }
+  return {
+    start_date: items[0]?.trade_date || null,
+    end_date: last?.trade_date || null,
+    count: items.length,
 
-//     // ====== stats (close) ======
-//     const closes = items.map(x => x.close);
-//     const todayClose = closes[closes.length - 1];
-//     const mean = avg(closes);
-//     const high = Math.max(...closes);
-//     const low = Math.min(...closes);
-//     const asof = items[items.length - 1].trade_date;
+    close_mean: closes.length ? mean(closes) : null,
+    close_max: closes.length ? Math.max(...closes) : null,
+    close_min: closes.length ? Math.min(...closes) : null,
+    close_latest: latest_close,
 
-//     const highDates = items.filter(x => x.close === high).map(x => x.trade_date);
-//     const lowDates = items.filter(x => x.close === low).map(x => x.trade_date);
-//     const highDateInfo = extremeDateSummary(highDates);
-//     const lowDateInfo = extremeDateSummary(lowDates);
+    tor_mean: tors.length ? mean(tors) : null,
+    tor_max: tors.length ? Math.max(...tors) : null,
+    tor_min: tors.length ? Math.min(...tors) : null,
+    tor_latest: latest_tor,
+  };
+}
 
-//     const devVsMean = mean ? (todayClose - mean) / mean : 0;
-//     const riseFromLow = low ? (todayClose - low) / low : 0;
-//     const drawdownFromHigh = high ? (todayClose - high) / high : 0;
-//     const amplitude = low ? (high - low) / low : 0;
+/** ----------------- Utils ----------------- **/
 
-//     const posInRange = high !== low ? (todayClose - low) / (high - low) : 0;
-//     const posPct = posInRange * 100;
+function normalizeTsCode(code) {
+  // 支持：600519 / 000001 / 600519.SH / 000001.SZ
+  const c = code.toUpperCase();
+  if (c.includes(".")) return c;
 
-//     // ====== stats (turnover_rate) ======
-//     const tors = items.map(x => x.turnover_rate).filter(v => Number.isFinite(v));
-//     const torLatest = items[items.length - 1].turnover_rate ?? null;
-//     const torMean = tors.length ? avg(tors) : null;
-//     const torMax = tors.length ? Math.max(...tors) : null;
-//     const torMin = tors.length ? Math.min(...tors) : null;
+  // A股：6开头/9开头多为沪；0/3多为深；这里只做常见映射
+  if (/^(6|9)\d{5}$/.test(c)) return `${c}.SH`;
+  if (/^(0|3)\d{5}$/.test(c)) return `${c}.SZ`;
 
-//     const torMaxDates = torMax == null ? [] : items.filter(x => x.turnover_rate === torMax).map(x => x.trade_date);
-//     const torMinDates = torMin == null ? [] : items.filter(x => x.turnover_rate === torMin).map(x => x.trade_date);
+  // 兜底：直接返回
+  return c;
+}
 
-//     const summary = {
-//       ts_code,
-//       mode,
-//       start: items[0].trade_date,
-//       end: asof,
-//       count: items.length,
+function numOrNull(x) {
+  const v = Number(x);
+  return Number.isFinite(v) ? v : null;
+}
 
-//       today_close: todayClose,
-//       mean,
-//       high,
-//       low,
-//       high_date_short: highDateInfo.short,
-//       high_date_help: highDateInfo.help,
-//       low_date_short: lowDateInfo.short,
-//       low_date_help: lowDateInfo.help,
+function mean(arr) {
+  let s = 0;
+  for (const v of arr) s += v;
+  return arr.length ? s / arr.length : null;
+}
 
-//       dev_vs_mean: devVsMean,
-//       rise_from_low: riseFromLow,
-//       drawdown_from_high: drawdownFromHigh,
-//       amplitude,
-//       pos_pct: posPct,
+function ymd(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}${m}${dd}`;
+}
 
-//       // turnover
-//       turnover_latest: torLatest,
-//       turnover_mean: torMean,
-//       turnover_max: torMax,
-//       turnover_max_date_short: extremeDateSummary(torMaxDates).short,
-//       turnover_min: torMin,
-//       turnover_min_date_short: extremeDateSummary(torMinDates).short,
-//     };
+function addDays(d, days) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + days);
+  return x;
+}
 
-//     const resp = json({ ok: true, items, summary }, 200, { "Cache-Control": "public, max-age=900" });
-//     context.waitUntil(cache.put(cacheKey, resp.clone()));
-//     return resp;
-
-//   } catch (e) {
-//     return json({ ok: false, msg: String(e?.message || e) }, 500);
-//   }
-// }
-
-// function json(obj, status = 200, extraHeaders = {}) {
-//   return new Response(JSON.stringify(obj), {
-//     status,
-//     headers: {
-//       "content-type": "application/json; charset=utf-8",
-//       ...extraHeaders,
-//     }
-//   });
-// }
-
-// function toTsCode(code) {
-//   const c = (code || "").trim().toUpperCase();
-//   if (c.endsWith(".SH") || c.endsWith(".SZ") || c.endsWith(".BJ")) return c;
-//   if (/^\d{6}$/.test(c)) {
-//     if (c.startsWith("6")) return `${c}.SH`;
-//     if (c.startsWith("0") || c.startsWith("3")) return `${c}.SZ`;
-//     if (c.startsWith("4") || c.startsWith("8")) return `${c}.BJ`;
-//   }
-//   return c;
-// }
-
-// async function callTuShare(token, api_name, params, fields) {
-//   const r = await fetch("https://api.tushare.pro", {
-//     method: "POST",
-//     headers: { "content-type": "application/json" },
-//     body: JSON.stringify({ api_name, token, params, fields })
-//   });
-//   if (!r.ok) throw new Error(`TuShare HTTP ${r.status}`);
-//   const j = await r.json();
-//   if (j?.code !== 0) throw new Error(`TuShare error ${j?.code}: ${j?.msg}`);
-
-//   const f = j.data.fields;
-//   const items = j.data.items || [];
-//   const idx = Object.fromEntries(f.map((name, i) => [name, i]));
-
-//   return items.map(row => {
-//     const o = {};
-//     for (const k of f) o[k] = row[idx[k]];
-//     return o;
-//   });
-// }
-
-// function numOrNull(x) {
-//   const v = Number(x);
-//   return Number.isFinite(v) ? v : null;
-// }
-
-// function avg(arr) {
-//   let s = 0;
-//   for (const v of arr) s += v;
-//   return arr.length ? s / arr.length : 0;
-// }
-
-// function cnDate(yyyymmdd) {
-//   if (!/^\d{8}$/.test(yyyymmdd)) return yyyymmdd;
-//   const y = Number(yyyymmdd.slice(0, 4));
-//   const m = Number(yyyymmdd.slice(4, 6));
-//   const d = Number(yyyymmdd.slice(6, 8));
-//   return `${y}年${m}月${d}日`;
-// }
-
-// function extremeDateSummary(dates) {
-//   const uniq = [...new Set((dates || []).filter(Boolean))].sort();
-//   if (!uniq.length) return { short: "-", help: "未找到日期" };
-//   if (uniq.length === 1) {
-//     const d = cnDate(uniq[0]);
-//     return { short: d, help: `出现日期：${d}` };
-//   }
-//   const first = cnDate(uniq[0]);
-//   const last = cnDate(uniq[uniq.length - 1]);
-//   return { short: `${first} 等${uniq.length}天`, help: `共出现 ${uniq.length} 天；最早：${first}；最晚：${last}` };
-// }
-
-// function toEastmoneySecid(ts_code) {
-//   // ts_code: "600519.SH" / "000001.SZ" / "430047.BJ"
-//   const [code, ex] = ts_code.split(".");
-//   const market = ex === "SH" ? "1" : "0"; // 东财常用：沪=1，深/北=0
-//   return `${market}.${code}`;
-// }
-
-// async function fetchTurnoverEastmoney(ts_code, beg, end) {
-//   const secid = toEastmoneySecid(ts_code);
-
-//   // 参考 akshare 的用法：同一个接口 push2his + fields2 里包含 f61（换手率）:contentReference[oaicite:1]{index=1}
-//   // 这里我们只要日期(f51) + 换手率(f61)，够用且更省流量 :contentReference[oaicite:2]{index=2}
-//   const params = new URLSearchParams({
-//     fields1: "f1,f2,f3,f4,f5,f6",
-//     fields2: "f51,f61",
-//     ut: "7eea3edcaed734bea9cbfc24409ed989",
-//     klt: "101", // 日K
-//     fqt: "0",   // 不复权（换手率本身也不需要复权）
-//     beg,
-//     end,
-//     secid,
-//   });
-
-//   const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?${params.toString()}`;
-//   const r = await fetch(url, {
-//     headers: {
-//       "user-agent": "Mozilla/5.0",
-//       "referer": "https://quote.eastmoney.com/",
-//       "accept": "application/json, text/plain, */*",
-//     },
-//   });
-//   if (!r.ok) throw new Error(`Eastmoney HTTP ${r.status}`);
-
-//   const j = await r.json();
-//   const klines = j?.data?.klines || [];
-
-//   // klines 每条形如： "2024-01-02,1.23"
-//   const map = new Map();
-//   for (const line of klines) {
-//     const parts = String(line).split(",");
-//     const date = (parts[0] || "").replace(/-/g, ""); // YYYYMMDD
-//     const tor = numOrNull(parts[1]); // f61：换手率（%） :contentReference[oaicite:3]{index=3}
-//     if (date) map.set(date, tor);
-//   }
-//   return map;
-// }
+function json(obj, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "access-control-allow-origin": "*",
+    },
+  });
+}
