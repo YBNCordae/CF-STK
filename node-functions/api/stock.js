@@ -39,6 +39,8 @@ export default async function onRequest(context) {
       items = itemsAll.slice(-nn);
     }
 
+
+    const summary = buildSummary(items);
     const name_cn = await fetchCnNameEastmoney(ts_code);
     summary.name_cn = name_cn;
 
