@@ -57,9 +57,6 @@ export async function onRequestGet(context) {
     // 2) turnover_rate：改用东方财富 K 线接口字段 f61（换手率%）
     const torMap = await fetchTurnoverEastmoney(ts_code, startDate, endDate);
 
-
-    const torMap = new Map(basics.map(r => [r.trade_date, numOrNull(r.turnover_rate)]));
-
     // 3) merge + sort asc
     let items = daily
       .map(r => ({
