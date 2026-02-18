@@ -74,7 +74,8 @@ async function runQuery() {
     lastPayload = payload;
     disableDownloads(false);
     renderSummary(payload.summary, getBuyInfo());
-    renderCharts(payload.items, payload.summary);
+    renderCharts(payload.items, { ...payload.summary, ts_code: payload.ts_code });
+
     renderTable(payload.items);
   } catch (e) {
     console.error(e);
@@ -96,6 +97,49 @@ function getBuyInfo() {
 
 function renderSummary(s, buyInfo) {
   if (!s) return setSummary("没有数据");
+  // ===== 把后端 summary 字段映射成前端旧字段（兼容东财版输出） =====
+  s = { ...s };
+
+  // start/end/count 兼容
+  s.start = s.start ?? s.start_date ?? "";
+  s.end   = s.end   ?? s.end_date   ?? "";
+  s.count = s.count ?? 0;
+
+  // close 兼容
+  s.today_close = s.today_close ?? s.close_latest ?? null;
+  s.mean        = s.mean        ?? s.close_mean   ?? null;
+  s.high        = s.high        ?? s.close_max    ?? null;
+  s.low         = s.low         ?? s.close_min    ?? null;
+
+  // turnover 兼容（单位：%）
+  s.turnover_latest = s.turnover_latest ?? s.tor_latest ?? null;
+  s.turnover_mean   = s.turnover_mean   ?? s.tor_mean   ?? null;
+  s.turnover_max    = s.turnover_max    ?? s.tor_max    ?? null;
+  s.turnover_min    = s.turnover_min    ?? s.tor_min    ?? null;
+
+  // ===== 衍生指标：后端没给的话前端补算（避免 NaN / undefined）=====
+  if (Number.isFinite(s.today_close) && Number.isFinite(s.mean) && !Number.isFinite(s.dev_vs_mean) && s.mean !== 0) {
+    s.dev_vs_mean = (s.today_close - s.mean) / s.mean;
+  }
+  if (Number.isFinite(s.high) && Number.isFinite(s.low) && !Number.isFinite(s.amplitude) && s.low !== 0) {
+    s.amplitude = (s.high - s.low) / s.low;
+  }
+  if (Number.isFinite(s.today_close) && Number.isFinite(s.low) && !Number.isFinite(s.rise_from_low) && s.low !== 0) {
+    s.rise_from_low = (s.today_close - s.low) / s.low;
+  }
+  if (Number.isFinite(s.today_close) && Number.isFinite(s.high) && !Number.isFinite(s.drawdown_from_high) && s.high !== 0) {
+    s.drawdown_from_high = (s.today_close - s.high) / s.high;
+  }
+  if (Number.isFinite(s.today_close) && Number.isFinite(s.high) && Number.isFinite(s.low) && !Number.isFinite(s.pos_pct) && (s.high - s.low) !== 0) {
+    s.pos_pct = ((s.today_close - s.low) / (s.high - s.low)) * 100;
+  }
+
+  // 日期字段目前后端没给，先兜底为 "-"
+  s.high_date_short = s.high_date_short ?? "-";
+  s.low_date_short  = s.low_date_short  ?? "-";
+  s.turnover_max_date_short = s.turnover_max_date_short ?? "-";
+  s.turnover_min_date_short = s.turnover_min_date_short ?? "-";
+
 
   const cn = cnDate;
   const f2 = x => (x == null || !Number.isFinite(x)) ? "-" : Number(x).toFixed(2);
