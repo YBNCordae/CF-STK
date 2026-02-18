@@ -80,6 +80,8 @@ function normalizeSummary(summary, items, ts_code) {
   if (Number.isFinite(s.today_close) && Number.isFinite(s.high) && Number.isFinite(s.low) && !Number.isFinite(s.pos_pct) && (s.high - s.low) !== 0) {
     s.pos_pct = ((s.today_close - s.low) / (s.high - s.low)) * 100;
   }
+  
+  s.name_cn = s.name_cn ?? "";   // ✅ 统一放到 summary 里
 
   return s;
 }
@@ -146,6 +148,8 @@ async function runQuery() {
 const summary2 = normalizeSummary(payload.summary, payload.items, payload.ts_code);
 summary2.name_cn = summary2.name_cn ?? payload.name_cn ?? "";
 summary2.ts_code = summary2.ts_code ?? payload.ts_code ?? "";
+summary2.mode = summary2.mode ?? payload.mode ?? "";
+
 
 
 lastPayload = { ...payload, summary: summary2 };   // ✅ 导出Excel也会用到这个
@@ -481,7 +485,7 @@ function exportXlsx() {
 
 function filenameBase() {
   const code = (val("code") || "stock").trim().toUpperCase();
-  const name = (lastPayload?.name_cn || lastPayload?.summary?.name_cn || "").trim();
+  const name = (lastPayload?.summary?.name_cn || lastPayload?.name_cn || "").trim();
   const today = toYmd(new Date());
   const safeName = name.replace(/[\\/:*?"<>|]/g, ""); // 防 windows 文件名非法字符
   return safeName ? `${safeName}_${code}_${today}` : `${code}_${today}`;
