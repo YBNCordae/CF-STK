@@ -47,12 +47,16 @@ export async function onRequestGet(context) {
 
     // 2) daily_basic：换手率（%）
     // 字段：turnover_rate（换手率%）来自 TuShare 文档
-    const basics = await callTuShare(
-      env.TUSHARE_TOKEN,
-      "daily_basic",
-      { ts_code, start_date: startDate, end_date: endDate },
-      "trade_date,turnover_rate"
-    );
+    // const basics = await callTuShare(
+    //   env.TUSHARE_TOKEN,
+    //   "daily_basic",
+    //   { ts_code, start_date: startDate, end_date: endDate },
+    //   "trade_date,turnover_rate"
+    // );
+
+    // 2) turnover_rate：改用东方财富 K 线接口字段 f61（换手率%）
+    const torMap = await fetchTurnoverEastmoney(ts_code, startDate, endDate);
+
 
     const torMap = new Map(basics.map(r => [r.trade_date, numOrNull(r.turnover_rate)]));
 
@@ -217,3 +221,51 @@ function extremeDateSummary(dates) {
   const last = cnDate(uniq[uniq.length - 1]);
   return { short: `${first} 等${uniq.length}天`, help: `共出现 ${uniq.length} 天；最早：${first}；最晚：${last}` };
 }
+
+function toEastmoneySecid(ts_code) {
+  // ts_code: "600519.SH" / "000001.SZ" / "430047.BJ"
+  const [code, ex] = ts_code.split(".");
+  const market = ex === "SH" ? "1" : "0"; // 东财常用：沪=1，深/北=0
+  return `${market}.${code}`;
+}
+
+async function fetchTurnoverEastmoney(ts_code, beg, end) {
+  const secid = toEastmoneySecid(ts_code);
+
+  // 参考 akshare 的用法：同一个接口 push2his + fields2 里包含 f61（换手率）:contentReference[oaicite:1]{index=1}
+  // 这里我们只要日期(f51) + 换手率(f61)，够用且更省流量 :contentReference[oaicite:2]{index=2}
+  const params = new URLSearchParams({
+    fields1: "f1,f2,f3,f4,f5,f6",
+    fields2: "f51,f61",
+    ut: "7eea3edcaed734bea9cbfc24409ed989",
+    klt: "101", // 日K
+    fqt: "0",   // 不复权（换手率本身也不需要复权）
+    beg,
+    end,
+    secid,
+  });
+
+  const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?${params.toString()}`;
+  const r = await fetch(url, {
+    headers: {
+      "user-agent": "Mozilla/5.0",
+      "referer": "https://quote.eastmoney.com/",
+      "accept": "application/json, text/plain, */*",
+    },
+  });
+  if (!r.ok) throw new Error(`Eastmoney HTTP ${r.status}`);
+
+  const j = await r.json();
+  const klines = j?.data?.klines || [];
+
+  // klines 每条形如： "2024-01-02,1.23"
+  const map = new Map();
+  for (const line of klines) {
+    const parts = String(line).split(",");
+    const date = (parts[0] || "").replace(/-/g, ""); // YYYYMMDD
+    const tor = numOrNull(parts[1]); // f61：换手率（%） :contentReference[oaicite:3]{index=3}
+    if (date) map.set(date, tor);
+  }
+  return map;
+}
+
