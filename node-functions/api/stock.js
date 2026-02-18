@@ -10,7 +10,19 @@ export default async function onRequest(context) {
 
     // 统一成 ts_code 形态：600519.SH / 000001.SZ
     const ts_code = normalizeTsCode(rawCode);
-
+    const name_cn = await fetchCnNameEastmoney(ts_code);
+    return json({
+    ok: true,
+    ts_code,
+    name_cn,
+    mode,
+    start,
+    end,
+    n: mode === "n" ? String(items.length) : null,
+    summary,
+    items
+  }, 200);
+}
     let start = (sp.get("start") || sp.get("start_date") || "").trim();
     let end = (sp.get("end") || sp.get("end_date") || "").trim();
     let n = (sp.get("n") || "").trim();
