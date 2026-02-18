@@ -10,19 +10,6 @@ export default async function onRequest(context) {
 
     // 统一成 ts_code 形态：600519.SH / 000001.SZ
     const ts_code = normalizeTsCode(rawCode);
-    const name_cn = await fetchCnNameEastmoney(ts_code);
-    return json({
-    ok: true,
-    ts_code,
-    name_cn,
-    mode,
-    start,
-    end,
-    n: mode === "n" ? String(items.length) : null,
-    summary,
-    items
-  }, 200);
-}
     let start = (sp.get("start") || sp.get("start_date") || "").trim();
     let end = (sp.get("end") || sp.get("end_date") || "").trim();
     let n = (sp.get("n") || "").trim();
@@ -52,9 +39,20 @@ export default async function onRequest(context) {
       items = itemsAll.slice(-nn);
     }
 
-    const summary = buildSummary(items);
+    const name_cn = await fetchCnNameEastmoney(ts_code);
+    summary.name_cn = name_cn;
 
-    return json({ ok: true, ts_code, mode, start, end, n: mode === "n" ? String(items.length) : null, summary, items }, 200);
+    return json({
+      ok: true,
+      ts_code,
+      name_cn, // 顶层也带一份，前端好取
+      mode,
+      start,
+      end,
+      n: mode === "n" ? String(items.length) : null,
+      summary,
+      items
+    }, 200);
   } catch (e) {
     return json({ ok: false, msg: String(e?.message || e) }, 500);
   }
@@ -150,6 +148,32 @@ function buildSummary(items) {
 }
 
 /** ----------------- Utils ----------------- **/
+
+async function fetchCnNameEastmoney(ts_code) {
+  const secid = toEastmoneySecid(ts_code);
+  const params = new URLSearchParams({
+    ut: "fa5fd1943c7b386f172d6893dbfba10b",
+    fltt: "2",
+    invt: "2",
+    fields: "f14", // 中文名
+    secid,
+  });
+
+  const url = `https://push2.eastmoney.com/api/qt/stock/get?${params.toString()}`;
+  const r = await fetch(url, {
+    headers: {
+      "user-agent": "Mozilla/5.0",
+      "referer": "https://quote.eastmoney.com/",
+      "accept": "application/json, text/plain, */*",
+    },
+  });
+  if (!r.ok) return null;
+
+  const j = await r.json();
+  const name = j?.data?.f14;
+  return typeof name === "string" && name.trim() ? name.trim() : null;
+}
+
 
 function normalizeTsCode(code) {
   // 支持：600519 / 000001 / 600519.SH / 000001.SZ
