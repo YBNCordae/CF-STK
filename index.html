@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>股票区间查询</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <h1>股票区间查询</h1>
+
+    <div class="card">
+      <label>代码（如 002156.SZ）<input id="code" value="002156.SZ"></label>
+      <label>开始（YYYYMMDD）<input id="start" value="20250101"></label>
+      <label>结束（YYYYMMDD）<input id="end" value="20250218"></label>
+      <label>买入价（可选）<input id="buy" value=""></label>
+      <button id="btn">查询</button>
+      <button id="export" disabled>导出 Excel</button>
+    </div>
+
+    <div class="card" id="summary"></div>
+    <div class="card"><div id="chart" style="height:420px;"></div></div>
+  </div>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>
