@@ -427,6 +427,7 @@ function exportXlsx() {
   // ====== Sheet1：查询概览 ======
   const rows = [
     ["股票代码", s.ts_code],
+    ["股票代码", s.ts_code ],
     ["区间选择", s.mode === "n" ? "最近N个交易日" : "自定义起止日期"],
     ["区间开始", cnDate(s.start)],
     ["区间结束（最新交易日）", cnDate(s.end)],
@@ -479,9 +480,12 @@ function exportXlsx() {
 
 function filenameBase() {
   const code = (val("code") || "stock").trim().toUpperCase();
+  const name = (lastPayload?.name_cn || lastPayload?.summary?.name_cn || "").trim();
   const today = toYmd(new Date());
-  return `${code}_${today}`;
+  const safeName = name.replace(/[\\/:*?"<>|]/g, ""); // 防 windows 文件名非法字符
+  return safeName ? `${safeName}_${code}_${today}` : `${code}_${today}`;
 }
+
 
 function disableDownloads(disabled) {
   document.getElementById("downloadCsv").disabled = disabled;
