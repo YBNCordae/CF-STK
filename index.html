@@ -3,55 +3,63 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>A股股价区间对比</title>
+  <title>A股股价区间分析</title>
   <link rel="stylesheet" href="/assets/style.css" />
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 </head>
 <body>
   <div class="wrap">
-    <h1>A股：今日收盘价 vs 区间统计（均值 / 最高 / 最低）</h1>
+    <h1>A股：区间价格、换手率与价格区间命中统计</h1>
 
     <div class="card grid">
       <div>
-        <label>股票代码（例：600519 / 000001 / 600519.SH）</label>
-        <input id="code" value="" />
+        <label for="code">股票代码（例如 600519 / 000001 / 600519.SH）</label>
+        <input id="code" value="" placeholder="输入股票代码" />
       </div>
 
       <div>
         <label>区间选择</label>
         <div class="row">
-          <label class="radio"><input type="radio" name="mode" value="n" checked> 最近N个交易日</label>
-          <label class="radio"><input type="radio" name="mode" value="range"> 自定义起止日期</label>
+          <label class="radio"><input type="radio" name="mode" value="n" checked /> 最近 N 个交易日</label>
+          <label class="radio"><input type="radio" name="mode" value="range" /> 自定义起止日期</label>
         </div>
       </div>
 
       <div id="nBox">
-        <label>N（交易日）</label>
+        <label for="n">N（交易日）</label>
         <input id="n" type="number" min="5" max="2000" value="60" />
       </div>
 
       <div id="rangeBox" class="hidden">
-        <label>开始（YYYYMMDD）</label>
+        <label for="start">开始（YYYYMMDD）</label>
         <input id="start" value="" />
-        <label style="margin-top:8px;">结束（YYYYMMDD）</label>
+        <label for="end" class="sub-label">结束（YYYYMMDD）</label>
         <input id="end" value="" />
       </div>
 
       <div>
-        <label>我的买入价（可选）</label>
+        <label>价格区间统计（可选）</label>
+        <div class="range-row">
+          <input id="priceLow" type="number" min="0" step="0.01" placeholder="下限，例如 50.00" />
+          <input id="priceHigh" type="number" min="0" step="0.01" placeholder="上限，例如 60.00" />
+        </div>
+        <div class="muted compact">填写后会统计收盘价落在该区间内的交易日次数与占比。</div>
+      </div>
+
+      <div>
+        <label for="buy">我的买入价（可选）</label>
         <input id="buy" type="number" min="0" step="0.01" placeholder="例如 52.60" />
-        <label style="margin-top:8px;">持股数量（可选）</label>
+        <label for="shares" class="sub-label">持股数量（可选）</label>
         <input id="shares" type="number" min="0" step="100" placeholder="例如 5700" />
       </div>
 
       <div class="btns">
         <button id="btn">查询</button>
         <button id="downloadCsv" disabled>下载 CSV</button>
-        <button id="exportXlsx" disabled>导出 Excel（查询概览+区间数据）</button>
+        <button id="exportXlsx" disabled>导出 Excel</button>
       </div>
     </div>
-    <div>股票：<b>${(s.name_cn || "-")}（${s.ts_code || "-"}）</b></div>
 
     <div class="card" id="summary"></div>
 
@@ -63,11 +71,11 @@
     <div class="card">
       <h2>换手率（%）</h2>
       <div id="chartTor" class="chart"></div>
-      <div class="muted">说明：换手率来自 东方财富 日K 接口字段 f61（单位：%）。</div>
+      <div class="muted">说明：换手率来自东方财富日线接口字段 `f61`。</div>
     </div>
 
     <div class="card">
-      <h2>原始数据（日期 / 收盘价 / 换手率）</h2>
+      <h2>原始数据（日线明细）</h2>
       <div id="table"></div>
     </div>
   </div>

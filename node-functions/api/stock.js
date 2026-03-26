@@ -1,139 +1,141 @@
 export default async function onRequest(context) {
   try {
-    const u = new URL(context.request.url);
-    const sp = u.searchParams;
+    const url = new URL(context.request.url);
+    const sp = url.searchParams;
 
-    const rawCode = (sp.get("code") || "").trim();
-    const mode = (sp.get("mode") || "n").trim();
-
-    if (!rawCode) return json({ ok: false, msg: "需要 code 参数" }, 400);
-
-    // 统一成 ts_code 形态：600519.SH / 000001.SZ
-    const ts_code = normalizeTsCode(rawCode);
-    let start = (sp.get("start") || sp.get("start_date") || "").trim();
-    let end = (sp.get("end") || sp.get("end_date") || "").trim();
-    let n = (sp.get("n") || "").trim();
-
-    // mode=n：允许不传 start/end，后端自动补齐
-    if (mode === "n") {
-      if (!n) n = "60";
-      if (!end) end = ymd(new Date());
-      if (!start) start = ymd(addDays(new Date(), -900));
-    } else if (mode === "range") {
-      if (!start || !end) return json({ ok: false, msg: "mode=range 需要 start/end" }, 400);
-    } else {
-      return json({ ok: false, msg: "mode 只能是 n 或 range" }, 400);
+    const rawCode = textParam(sp, "code");
+    const mode = textParam(sp, "mode") || "n";
+    if (!rawCode) {
+      return json({ ok: false, msg: "需要 code 参数" }, 400);
     }
 
-    // 拉取日K（包含收盘价 & 换手率）
-    const itemsAll = await fetchKlineEastmoney(ts_code, start, end);
+    const tsCode = normalizeTsCode(rawCode);
+    const priceRange = readPriceRange(sp);
+    if (priceRange.error) {
+      return json({ ok: false, msg: priceRange.error }, 400);
+    }
 
+    const dateRange = resolveDateRange(sp, mode);
+    if (dateRange.error) {
+      return json({ ok: false, msg: dateRange.error }, 400);
+    }
+
+    const itemsAll = await fetchKlineEastmoney(tsCode, dateRange.start, dateRange.end);
     if (!itemsAll.length) {
-      return json({ ok: false, msg: "数据为空：请检查代码/日期范围" }, 200);
+      return json({ ok: false, msg: "没有查询到数据，请检查股票代码和日期范围" }, 200);
     }
 
-    // 如果是最近 N 个交易日，截取末尾 N 条
-    let items = itemsAll;
-    if (mode === "n") {
-      const nn = Math.max(1, Math.min(2000, parseInt(n, 10) || 60));
-      items = itemsAll.slice(-nn);
-    }
+    const items = markPriceRangeHits(sliceItemsByMode(itemsAll, mode, dateRange.n), priceRange.value);
+    const summary = buildSummary(items, priceRange.value);
+    const nameCn = await fetchCnNameEastmoney(tsCode);
 
+    summary.name_cn = nameCn;
+    summary.ts_code = tsCode;
+    summary.mode = mode;
 
-    const summary = buildSummary(items);
-    const name_cn = await fetchCnNameEastmoney(ts_code);
-    summary.name_cn = name_cn;
-
-    return json({
-      ok: true,
-      ts_code,
-      name_cn, // 顶层也带一份，前端好取
-      mode,
-      start,
-      end,
-      n: mode === "n" ? String(items.length) : null,
-      summary,
-      items
-    }, 200);
-  } catch (e) {
-    return json({ ok: false, msg: String(e?.message || e) }, 500);
+    return json(
+      {
+        ok: true,
+        ts_code: tsCode,
+        name_cn: nameCn,
+        mode,
+        start: summary.start_date,
+        end: summary.end_date,
+        n: mode === "n" ? String(items.length) : null,
+        summary,
+        items,
+      },
+      200
+    );
+  } catch (error) {
+    return json({ ok: false, msg: String(error?.message || error) }, 500);
   }
 }
 
-/** ----------------- Eastmoney Kline ----------------- **/
-
-function toEastmoneySecid(ts_code) {
-  const [code, ex] = ts_code.split(".");
-  let market = "0"; // 默认深
-  if (ex === "SH") market = "1";
-  else if (ex === "SZ") market = "0";
-  else if (ex === "BJ") market = "0"; // BJ 在东财很多接口用 0，这里保守
-  return `${market}.${code}`;
+function textParam(searchParams, key) {
+  return (searchParams.get(key) || "").trim();
 }
 
+function readPriceRange(searchParams) {
+  const lowRaw = textParam(searchParams, "price_low");
+  const highRaw = textParam(searchParams, "price_high");
 
-async function fetchKlineEastmoney(ts_code, beg, end) {
-  const secid = toEastmoneySecid(ts_code);
-
-  // fields2:
-  // f51 日期 YYYY-MM-DD
-  // f52 开盘 f53 收盘 f54 最高 f55 最低 f56 成交量 f57 成交额
-  // f61 换手率(%) f62 振幅(%) f66 涨跌幅(%) f67 涨跌额
-  const params = new URLSearchParams({
-    fields1: "f1,f2,f3,f4,f5,f6",
-    fields2: "f51,f52,f53,f54,f55,f56,f57,f61",
-    ut: "7eea3edcaed734bea9cbfc24409ed989",
-    klt: "101", // 日K
-    fqt: "0",   // 不复权
-    beg,
-    end,
-    secid,
-  });
-
-  const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?${params.toString()}`;
-  const r = await fetch(url, {
-    headers: {
-      "user-agent": "Mozilla/5.0",
-      "referer": "https://quote.eastmoney.com/",
-      "accept": "application/json, text/plain, */*",
-    },
-  });
-
-  if (!r.ok) throw new Error(`Eastmoney HTTP ${r.status}`);
-
-  const j = await r.json();
-  const klines = j?.data?.klines || [];
-
-  // 每条： "2024-01-02,open,close,high,low,vol,amt,turnover"
-  const out = [];
-  for (const line of klines) {
-    const p = String(line).split(",");
-    const date = (p[0] || "").replace(/-/g, ""); // YYYYMMDD
-    const close = numOrNull(p[2]);
-    const tor = numOrNull(p[7]); // f61
-    if (date && Number.isFinite(close)) {
-      out.push({
-        trade_date: date,
-        close,
-        turnover_rate: Number.isFinite(tor) ? tor : null,
-      });
-    }
+  if (!lowRaw && !highRaw) {
+    return { value: null };
   }
 
-  // 确保按日期升序
-  out.sort((a, b) => a.trade_date.localeCompare(b.trade_date));
-  return out;
+  if (!lowRaw || !highRaw) {
+    return { error: "价格区间需要同时提供 price_low 和 price_high" };
+  }
+
+  const low = Number(lowRaw);
+  const high = Number(highRaw);
+  if (!Number.isFinite(low) || !Number.isFinite(high)) {
+    return { error: "价格区间必须是有效数字" };
+  }
+  if (low < 0 || high < 0) {
+    return { error: "价格区间不能为负数" };
+  }
+  if (low > high) {
+    return { error: "价格区间下限不能大于上限" };
+  }
+
+  return { value: { low, high } };
 }
 
-/** ----------------- Summary ----------------- **/
+function resolveDateRange(searchParams, mode) {
+  let start = textParam(searchParams, "start") || textParam(searchParams, "start_date");
+  let end = textParam(searchParams, "end") || textParam(searchParams, "end_date");
+  let n = parseInt(textParam(searchParams, "n"), 10);
 
-function buildSummary(items) {
-  const closes = items.map(x => x.close).filter(Number.isFinite);
-  const tors = items.map(x => x.turnover_rate).filter(Number.isFinite);
+  if (mode === "n") {
+    if (!Number.isInteger(n)) n = 60;
+    n = Math.max(5, Math.min(2000, n));
+    if (!end) end = ymd(new Date());
+    if (!start) start = ymd(addDays(new Date(), -900));
+  } else if (mode === "range") {
+    if (!start || !end) {
+      return { error: "mode=range 时需要 start 和 end" };
+    }
+  } else {
+    return { error: "mode 只能是 n 或 range" };
+  }
 
-  const last = items[items.length - 1];
-  const latest_close = last?.close ?? null;
-  const latest_tor = last?.turnover_rate ?? null;
+  if (!isYmd(start) || !isYmd(end)) {
+    return { error: "日期必须使用 YYYYMMDD 格式" };
+  }
+  if (start > end) {
+    return { error: "开始日期不能晚于结束日期" };
+  }
+
+  return { start, end, n };
+}
+
+function sliceItemsByMode(items, mode, n) {
+  if (mode !== "n") return items;
+  return items.slice(-n);
+}
+
+function markPriceRangeHits(items, priceRange) {
+  return items.map((item) => ({
+    ...item,
+    in_price_range: priceRange ? item.close >= priceRange.low && item.close <= priceRange.high : null,
+  }));
+}
+
+function buildSummary(items, priceRange) {
+  const closes = items.map((item) => item.close).filter(Number.isFinite);
+  const tors = items.map((item) => item.turnover_rate).filter(Number.isFinite);
+  const last = items[items.length - 1] || null;
+
+  const maxCloseRecord = findExtremeRecord(items, "close", "max");
+  const minCloseRecord = findExtremeRecord(items, "close", "min");
+  const maxTorRecord = findExtremeRecord(items, "turnover_rate", "max");
+  const minTorRecord = findExtremeRecord(items, "turnover_rate", "min");
+
+  const hitItems = priceRange ? items.filter((item) => item.in_price_range) : [];
+  const priceRangeCount = hitItems.length;
+  const priceRangeRatio = items.length ? priceRangeCount / items.length : null;
 
   return {
     start_date: items[0]?.trade_date || null,
@@ -141,117 +143,199 @@ function buildSummary(items) {
     count: items.length,
 
     close_mean: closes.length ? mean(closes) : null,
-    close_max: closes.length ? Math.max(...closes) : null,
-    close_min: closes.length ? Math.min(...closes) : null,
-    close_latest: latest_close,
+    close_max: maxCloseRecord?.close ?? null,
+    close_min: minCloseRecord?.close ?? null,
+    close_latest: last?.close ?? null,
+    high_date: maxCloseRecord?.trade_date ?? null,
+    low_date: minCloseRecord?.trade_date ?? null,
 
     tor_mean: tors.length ? mean(tors) : null,
-    tor_max: tors.length ? Math.max(...tors) : null,
-    tor_min: tors.length ? Math.min(...tors) : null,
-    tor_latest: latest_tor,
+    tor_max: maxTorRecord?.turnover_rate ?? null,
+    tor_min: minTorRecord?.turnover_rate ?? null,
+    tor_latest: last?.turnover_rate ?? null,
+    turnover_max_date: maxTorRecord?.trade_date ?? null,
+    turnover_min_date: minTorRecord?.trade_date ?? null,
+
+    price_range_enabled: Boolean(priceRange),
+    price_range_low: priceRange?.low ?? null,
+    price_range_high: priceRange?.high ?? null,
+    price_range_count: priceRange ? priceRangeCount : null,
+    price_range_ratio: priceRange ? priceRangeRatio : null,
+    price_range_dates: priceRange ? hitItems.map((item) => item.trade_date) : [],
   };
 }
 
-/** ----------------- Utils ----------------- **/
+function findExtremeRecord(items, key, type) {
+  let target = null;
 
+  for (const item of items) {
+    const value = item[key];
+    if (!Number.isFinite(value)) continue;
 
+    if (!target) {
+      target = item;
+      continue;
+    }
 
-async function fetchCnNameEastmoney(ts_code) {
-  const secid = toEastmoneySecid(ts_code);
+    if (type === "max" && value > target[key]) target = item;
+    if (type === "min" && value < target[key]) target = item;
+  }
 
-  // 1) 优先：stock/get 直接取 f14
+  return target;
+}
+
+function toEastmoneySecid(tsCode) {
+  const [code, exchange] = tsCode.split(".");
+  if (exchange === "SH") return `1.${code}`;
+  return `0.${code}`;
+}
+
+async function fetchKlineEastmoney(tsCode, beg, end) {
+  const params = new URLSearchParams({
+    fields1: "f1,f2,f3,f4,f5,f6",
+    fields2: "f51,f52,f53,f54,f55,f56,f57,f61",
+    ut: "7eea3edcaed734bea9cbfc24409ed989",
+    klt: "101",
+    fqt: "0",
+    beg,
+    end,
+    secid: toEastmoneySecid(tsCode),
+  });
+
+  const response = await fetch(`https://push2his.eastmoney.com/api/qt/stock/kline/get?${params.toString()}`, {
+    headers: {
+      "user-agent": "Mozilla/5.0",
+      referer: "https://quote.eastmoney.com/",
+      accept: "application/json, text/plain, */*",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`东方财富日线接口请求失败：HTTP ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const klines = payload?.data?.klines;
+  if (!Array.isArray(klines)) {
+    return [];
+  }
+
+  const items = [];
+  for (const line of klines) {
+    const parts = String(line).split(",");
+    const tradeDate = (parts[0] || "").replace(/-/g, "");
+    const close = Number(parts[2]);
+    const turnoverRate = Number(parts[7]);
+
+    if (!isYmd(tradeDate) || !Number.isFinite(close)) {
+      continue;
+    }
+
+    items.push({
+      trade_date: tradeDate,
+      close,
+      turnover_rate: Number.isFinite(turnoverRate) ? turnoverRate : null,
+    });
+  }
+
+  items.sort((a, b) => a.trade_date.localeCompare(b.trade_date));
+  return items;
+}
+
+async function fetchCnNameEastmoney(tsCode) {
+  const secid = toEastmoneySecid(tsCode);
+
   try {
-    const params = new URLSearchParams({
+    const directParams = new URLSearchParams({
       ut: "fa5fd1943c7b386f172d6893dbfba10b",
       fltt: "2",
       invt: "2",
       fields: "f14",
       secid,
     });
-    const url = `https://push2.eastmoney.com/api/qt/stock/get?${params.toString()}`;
-    const r = await fetch(url, {
+
+    const directResponse = await fetch(`https://push2.eastmoney.com/api/qt/stock/get?${directParams.toString()}`, {
       headers: {
         "user-agent": "Mozilla/5.0",
-        "referer": "https://quote.eastmoney.com/",
-        "accept": "application/json, text/plain, */*",
+        referer: "https://quote.eastmoney.com/",
+        accept: "application/json, text/plain, */*",
       },
     });
-    if (r.ok) {
-      const j = await r.json();
-      const name = j?.data?.f14;
-      if (typeof name === "string" && name.trim()) return name.trim();
+
+    if (directResponse.ok) {
+      const payload = await directResponse.json();
+      const name = payload?.data?.f14;
+      if (typeof name === "string" && name.trim()) {
+        return name.trim();
+      }
     }
   } catch (_) {}
 
-  // 2) 兜底：suggest 搜索（用代码更稳）
   try {
-    const code = ts_code.split(".")[0];
-    const params2 = new URLSearchParams({
-      input: code, // 600519
+    const code = tsCode.split(".")[0];
+    const suggestParams = new URLSearchParams({
+      input: code,
       type: "14",
-      token: "ff9f9b2c1a1f4b9d", // 常见 token（无需登录）
+      token: "ff9f9b2c1a1f4b9d",
       count: "5",
     });
-    const url2 = `https://searchapi.eastmoney.com/api/suggest/get?${params2.toString()}`;
-    const r2 = await fetch(url2, {
+
+    const suggestResponse = await fetch(`https://searchapi.eastmoney.com/api/suggest/get?${suggestParams.toString()}`, {
       headers: {
         "user-agent": "Mozilla/5.0",
-        "referer": "https://quote.eastmoney.com/",
-        "accept": "application/json, text/plain, */*",
+        referer: "https://quote.eastmoney.com/",
+        accept: "application/json, text/plain, */*",
       },
     });
-    if (!r2.ok) return null;
-    const j2 = await r2.json();
 
-    // 返回结构一般是: { QuotationCodeTable: { Data: [ { Name, Code, ... } ] } }
-    const arr = j2?.QuotationCodeTable?.Data;
-    if (Array.isArray(arr) && arr.length) {
-      // 尽量匹配 code
-      const hit = arr.find(x => String(x?.Code) === code) || arr[0];
-      const name = hit?.Name;
-      if (typeof name === "string" && name.trim()) return name.trim();
+    if (!suggestResponse.ok) {
+      return null;
+    }
+
+    const payload = await suggestResponse.json();
+    const candidates = payload?.QuotationCodeTable?.Data;
+    if (Array.isArray(candidates) && candidates.length) {
+      const exact = candidates.find((item) => String(item?.Code) === code) || candidates[0];
+      const name = exact?.Name;
+      if (typeof name === "string" && name.trim()) {
+        return name.trim();
+      }
     }
   } catch (_) {}
 
   return null;
 }
 
-
 function normalizeTsCode(code) {
-  // 支持：600519 / 000001 / 600519.SH / 000001.SZ
-  const c = code.toUpperCase();
-  if (c.includes(".")) return c;
-
-  // A股：6开头/9开头多为沪；0/3多为深；这里只做常见映射
-  if (/^(6|9)\d{5}$/.test(c)) return `${c}.SH`;
-  if (/^(0|3)\d{5}$/.test(c)) return `${c}.SZ`;
-
-  // 兜底：直接返回
-  return c;
-}
-
-function numOrNull(x) {
-  const v = Number(x);
-  return Number.isFinite(v) ? v : null;
+  const normalized = code.toUpperCase();
+  if (normalized.includes(".")) return normalized;
+  if (/^(6|9)\d{5}$/.test(normalized)) return `${normalized}.SH`;
+  if (/^(0|3)\d{5}$/.test(normalized)) return `${normalized}.SZ`;
+  if (/^8\d{5}$/.test(normalized)) return `${normalized}.BJ`;
+  return normalized;
 }
 
 function mean(arr) {
-  let s = 0;
-  for (const v of arr) s += v;
-  return arr.length ? s / arr.length : null;
+  return arr.length ? arr.reduce((sum, value) => sum + value, 0) / arr.length : null;
 }
 
-function ymd(d) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${y}${m}${dd}`;
+function isYmd(value) {
+  if (!/^\d{8}$/.test(value)) return false;
+  const date = new Date(Number(value.slice(0, 4)), Number(value.slice(4, 6)) - 1, Number(value.slice(6, 8)));
+  return ymd(date) === value;
 }
 
-function addDays(d, days) {
-  const x = new Date(d);
-  x.setDate(x.getDate() + days);
-  return x;
+function ymd(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}${m}${d}`;
+}
+
+function addDays(date, delta) {
+  const next = new Date(date.getTime());
+  next.setDate(next.getDate() + delta);
+  return next;
 }
 
 function json(obj, status = 200) {

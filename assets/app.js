@@ -1,205 +1,192 @@
 let lastPayload = null;
 
+const els = {
+  code: document.getElementById("code"),
+  n: document.getElementById("n"),
+  start: document.getElementById("start"),
+  end: document.getElementById("end"),
+  priceLow: document.getElementById("priceLow"),
+  priceHigh: document.getElementById("priceHigh"),
+  buy: document.getElementById("buy"),
+  shares: document.getElementById("shares"),
+  btn: document.getElementById("btn"),
+  downloadCsv: document.getElementById("downloadCsv"),
+  exportXlsx: document.getElementById("exportXlsx"),
+  summary: document.getElementById("summary"),
+  table: document.getElementById("table"),
+  nBox: document.getElementById("nBox"),
+  rangeBox: document.getElementById("rangeBox"),
+};
+
 initDefaults();
 bindModeSwitch();
+bindSummaryRecalc();
 
-document.getElementById("btn").onclick = runQuery;
-document.getElementById("downloadCsv").onclick = downloadCsv;
-document.getElementById("exportXlsx").onclick = exportXlsx;
+els.btn.addEventListener("click", runQuery);
+els.downloadCsv.addEventListener("click", downloadCsv);
+els.exportXlsx.addEventListener("click", exportXlsx);
 
-function f2(v) {
-  return Number.isFinite(v) ? v.toFixed(2) : "-";
-}
-
-function normalizeSummary(summary, items, ts_code) {
-  const s = { ...(summary || {}) };
-
-  // 基本字段（兼容你现在的后端字段名）
-  s.ts_code = s.ts_code ?? ts_code ?? "";
-  s.start = s.start ?? s.start_date ?? (items?.[0]?.trade_date || "");
-  s.end   = s.end   ?? s.end_date   ?? (items?.[items.length - 1]?.trade_date || "");
-  s.count = s.count ?? items?.length ?? 0;
-
-  s.today_close = s.today_close ?? s.close_latest ?? null;
-  s.mean        = s.mean        ?? s.close_mean   ?? null;
-  s.high        = s.high        ?? s.close_max    ?? null;
-  s.low         = s.low         ?? s.close_min    ?? null;
-
-  s.turnover_latest = s.turnover_latest ?? s.tor_latest ?? null;
-  s.turnover_mean   = s.turnover_mean   ?? s.tor_mean   ?? null;
-  s.turnover_max    = s.turnover_max    ?? s.tor_max    ?? null;
-  s.turnover_min    = s.turnover_min    ?? s.tor_min    ?? null;
-
-  // ===== 用 items 补“对应日期” =====
-  if (Array.isArray(items) && items.length) {
-    let hi = -Infinity, lo = Infinity;
-    let hiDate = "", loDate = "";
-
-    let tMax = -Infinity, tMin = Infinity;
-    let tMaxDate = "", tMinDate = "";
-
-    for (const r of items) {
-      const c = Number(r.close);
-      if (Number.isFinite(c)) {
-        if (c > hi) { hi = c; hiDate = r.trade_date; }
-        if (c < lo) { lo = c; loDate = r.trade_date; }
-      }
-      const t = Number(r.turnover_rate);
-      if (Number.isFinite(t)) {
-        if (t > tMax) { tMax = t; tMaxDate = r.trade_date; }
-        if (t < tMin) { tMin = t; tMinDate = r.trade_date; }
-      }
-    }
-
-    // 如果后端没给这些日期，就用前端算的
-    s.high_date_short = s.high_date_short ?? (hiDate ? cnDate(hiDate) : "-");
-    s.low_date_short  = s.low_date_short  ?? (loDate ? cnDate(loDate) : "-");
-    s.turnover_max_date_short = s.turnover_max_date_short ?? (tMaxDate ? cnDate(tMaxDate) : "-");
-    s.turnover_min_date_short = s.turnover_min_date_short ?? (tMinDate ? cnDate(tMinDate) : "-");
-
-    // 如果后端高低值缺失，也顺便补一下（更稳）
-    if (!Number.isFinite(s.high) && hiDate) s.high = hi;
-    if (!Number.isFinite(s.low)  && loDate) s.low  = lo;
-    if (!Number.isFinite(s.turnover_max) && tMaxDate) s.turnover_max = tMax;
-    if (!Number.isFinite(s.turnover_min) && tMinDate) s.turnover_min = tMin;
-  }
-
-  // ===== 衍生指标（后端没给的话前端补算）=====
-  if (Number.isFinite(s.today_close) && Number.isFinite(s.mean) && !Number.isFinite(s.dev_vs_mean) && s.mean !== 0) {
-    s.dev_vs_mean = (s.today_close - s.mean) / s.mean;
-  }
-  if (Number.isFinite(s.high) && Number.isFinite(s.low) && !Number.isFinite(s.amplitude) && s.low !== 0) {
-    s.amplitude = (s.high - s.low) / s.low;
-  }
-  if (Number.isFinite(s.today_close) && Number.isFinite(s.low) && !Number.isFinite(s.rise_from_low) && s.low !== 0) {
-    s.rise_from_low = (s.today_close - s.low) / s.low;
-  }
-  if (Number.isFinite(s.today_close) && Number.isFinite(s.high) && !Number.isFinite(s.drawdown_from_high) && s.high !== 0) {
-    s.drawdown_from_high = (s.today_close - s.high) / s.high;
-  }
-  if (Number.isFinite(s.today_close) && Number.isFinite(s.high) && Number.isFinite(s.low) && !Number.isFinite(s.pos_pct) && (s.high - s.low) !== 0) {
-    s.pos_pct = ((s.today_close - s.low) / (s.high - s.low)) * 100;
-  }
-  
-  s.name_cn = s.name_cn ?? "";   // ✅ 统一放到 summary 里
-
-  return s;
-}
+renderEmptyState();
 
 function initDefaults() {
-  // 默认 end = 今天（按浏览器本地），start/end 仅用于自定义模式；N模式会在 runQuery 时自动算范围
   const today = new Date();
-  const end = toYmd(today);
-  const start = toYmd(addDays(today, -180));
-  document.getElementById("start").value = start;
-  document.getElementById("end").value = end;
+  els.end.value = toYmd(today);
+  els.start.value = toYmd(addDays(today, -180));
 }
 
 function bindModeSwitch() {
   const radios = [...document.querySelectorAll("input[name=mode]")];
-  radios.forEach(r => r.addEventListener("change", () => {
-    const mode = getMode();
-    document.getElementById("nBox").classList.toggle("hidden", mode !== "n");
-    document.getElementById("rangeBox").classList.toggle("hidden", mode !== "range");
-  }));
+  radios.forEach((radio) => {
+    radio.addEventListener("change", () => {
+      const mode = getMode();
+      els.nBox.classList.toggle("hidden", mode !== "n");
+      els.rangeBox.classList.toggle("hidden", mode !== "range");
+    });
+  });
+}
+
+function bindSummaryRecalc() {
+  [els.buy, els.shares].forEach((input) => {
+    input.addEventListener("input", () => {
+      if (lastPayload?.summary) {
+        renderSummary(lastPayload.summary, getBuyInfo());
+      }
+    });
+  });
 }
 
 function getMode() {
   return document.querySelector("input[name=mode]:checked").value;
 }
 
+function readFormState() {
+  return {
+    code: valueOf(els.code).toUpperCase(),
+    mode: getMode(),
+    n: Number(valueOf(els.n) || "60"),
+    start: valueOf(els.start),
+    end: valueOf(els.end),
+    priceLow: parseOptionalNumber(valueOf(els.priceLow)),
+    priceHigh: parseOptionalNumber(valueOf(els.priceHigh)),
+  };
+}
+
+function validateForm(form) {
+  if (!form.code) return "请输入股票代码。";
+
+  if (form.mode === "n") {
+    if (!Number.isInteger(form.n) || form.n < 5 || form.n > 2000) {
+      return "最近 N 个交易日必须是 5 到 2000 之间的整数。";
+    }
+  } else {
+    if (!isYmd(form.start) || !isYmd(form.end)) {
+      return "自定义日期请使用 YYYYMMDD 格式。";
+    }
+    if (form.start > form.end) {
+      return "开始日期不能晚于结束日期。";
+    }
+  }
+
+  const hasLow = form.priceLow != null;
+  const hasHigh = form.priceHigh != null;
+  if (hasLow !== hasHigh) {
+    return "价格区间请同时填写下限和上限。";
+  }
+  if (hasLow && (form.priceLow < 0 || form.priceHigh < 0)) {
+    return "价格区间不能为负数。";
+  }
+  if (hasLow && form.priceLow > form.priceHigh) {
+    return "价格区间下限不能大于上限。";
+  }
+
+  return "";
+}
+
 async function runQuery() {
-  setSummary("查询中…");
-  disableDownloads(true);
+  const form = readFormState();
+  const validationError = validateForm(form);
+  if (validationError) {
+    handleQueryError(validationError);
+    return;
+  }
+
+  setLoadingState(true);
+  setSummary("<div>查询中...</div>");
+  clearVisuals();
 
   try {
-    const code = val("code");
-    const mode = getMode();
-    let start, end, n;
+    const qs = new URLSearchParams({ code: form.code, mode: form.mode });
 
-    if (mode === "n") {
-      n = Number(val("n") || "60");
-      const today = new Date();
-      end = toYmd(today);
-      start = toYmd(addDays(today, -900));
+    if (form.mode === "n") {
+      qs.set("n", String(form.n));
     } else {
-      start = val("start");
-      end = val("end");
+      qs.set("start", form.start);
+      qs.set("end", form.end);
     }
 
-    const qs = new URLSearchParams({ code, mode, start, end });
-    if (mode === "n") qs.set("n", String(n));
+    if (form.priceLow != null && form.priceHigh != null) {
+      qs.set("price_low", String(form.priceLow));
+      qs.set("price_high", String(form.priceHigh));
+    }
 
-    const r = await fetch(`/api/stock?${qs.toString()}`);
+    const response = await fetch(`/api/stock?${qs.toString()}`);
+    const text = await response.text();
 
-    // ✅ 先读 text，再尝试 parse，避免 r.json() 直接抛导致 UI 卡死
-    const text = await r.text();
     let payload;
     try {
       payload = JSON.parse(text);
     } catch {
-      throw new Error(`接口返回不是JSON（HTTP ${r.status}）：` + text.slice(0, 200));
+      throw new Error(`接口返回的不是 JSON（HTTP ${response.status}）：${text.slice(0, 200)}`);
     }
 
-    if (!r.ok || !payload.ok) {
-      throw new Error(payload.msg || `HTTP ${r.status}`);
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.msg || `HTTP ${response.status}`);
     }
 
-const summary2 = normalizeSummary(payload.summary, payload.items, payload.ts_code);
-summary2.name_cn = summary2.name_cn ?? payload.name_cn ?? "";
-summary2.ts_code = summary2.ts_code ?? payload.ts_code ?? "";
-summary2.mode = summary2.mode ?? payload.mode ?? "";
+    const summary = normalizeSummary(payload.summary, payload.items, {
+      tsCode: payload.ts_code,
+      nameCn: payload.name_cn,
+      mode: payload.mode,
+    });
 
-
-
-lastPayload = { ...payload, summary: summary2 };   // ✅ 导出Excel也会用到这个
-disableDownloads(false);
-
-renderSummary(summary2, getBuyInfo());
-renderCharts(payload.items, summary2);
-renderTable(payload.items);
-
-  } catch (e) {
-    console.error(e);
-    setSummary(`失败：${e.message || e}`);
-    lastPayload = null;
-    disableDownloads(true);
+    lastPayload = { ...payload, summary };
+    disableDownloads(false);
+    renderSummary(summary, getBuyInfo());
+    renderCharts(payload.items, summary);
+    renderTable(payload.items, summary);
+  } catch (error) {
+    handleQueryError(error?.message || String(error));
+  } finally {
+    setLoadingState(false);
   }
 }
 
+function normalizeSummary(summary, items, meta) {
+  const s = { ...(summary || {}) };
 
-function getBuyInfo() {
-  const buy = Number(val("buy") || "0");
-  const shares = Number(val("shares") || "0");
-  return {
-    buy: Number.isFinite(buy) && buy > 0 ? buy : null,
-    shares: Number.isFinite(shares) && shares > 0 ? shares : null,
-  };
-}
+  s.ts_code = s.ts_code ?? meta.tsCode ?? "";
+  s.name_cn = s.name_cn ?? meta.nameCn ?? "";
+  s.mode = s.mode ?? meta.mode ?? "";
 
-function renderSummary(s, buyInfo) {
-  if (!s) return setSummary("没有数据");
-  // ===== 把后端 summary 字段映射成前端旧字段（兼容东财版输出） =====
-  s = { ...s };
+  s.start = s.start ?? s.start_date ?? items?.[0]?.trade_date ?? "";
+  s.end = s.end ?? s.end_date ?? items?.[items.length - 1]?.trade_date ?? "";
+  s.count = s.count ?? items?.length ?? 0;
 
-  // start/end/count 兼容
-  s.start = s.start ?? s.start_date ?? "";
-  s.end   = s.end   ?? s.end_date   ?? "";
-  s.count = s.count ?? 0;
-
-  // close 兼容
   s.today_close = s.today_close ?? s.close_latest ?? null;
-  s.mean        = s.mean        ?? s.close_mean   ?? null;
-  s.high        = s.high        ?? s.close_max    ?? null;
-  s.low         = s.low         ?? s.close_min    ?? null;
+  s.mean = s.mean ?? s.close_mean ?? null;
+  s.high = s.high ?? s.close_max ?? null;
+  s.low = s.low ?? s.close_min ?? null;
 
-  // turnover 兼容（单位：%）
   s.turnover_latest = s.turnover_latest ?? s.tor_latest ?? null;
-  s.turnover_mean   = s.turnover_mean   ?? s.tor_mean   ?? null;
-  s.turnover_max    = s.turnover_max    ?? s.tor_max    ?? null;
-  s.turnover_min    = s.turnover_min    ?? s.tor_min    ?? null;
+  s.turnover_mean = s.turnover_mean ?? s.tor_mean ?? null;
+  s.turnover_max = s.turnover_max ?? s.tor_max ?? null;
+  s.turnover_min = s.turnover_min ?? s.tor_min ?? null;
 
-  // ===== 衍生指标：后端没给的话前端补算（避免 NaN / undefined）=====
+  s.high_date_short = s.high_date_short ?? shortDate(s.high_date);
+  s.low_date_short = s.low_date_short ?? shortDate(s.low_date);
+  s.turnover_max_date_short = s.turnover_max_date_short ?? shortDate(s.turnover_max_date);
+  s.turnover_min_date_short = s.turnover_min_date_short ?? shortDate(s.turnover_min_date);
+
   if (Number.isFinite(s.today_close) && Number.isFinite(s.mean) && !Number.isFinite(s.dev_vs_mean) && s.mean !== 0) {
     s.dev_vs_mean = (s.today_close - s.mean) / s.mean;
   }
@@ -212,324 +199,586 @@ function renderSummary(s, buyInfo) {
   if (Number.isFinite(s.today_close) && Number.isFinite(s.high) && !Number.isFinite(s.drawdown_from_high) && s.high !== 0) {
     s.drawdown_from_high = (s.today_close - s.high) / s.high;
   }
-  if (Number.isFinite(s.today_close) && Number.isFinite(s.high) && Number.isFinite(s.low) && !Number.isFinite(s.pos_pct) && (s.high - s.low) !== 0) {
+  if (
+    Number.isFinite(s.today_close) &&
+    Number.isFinite(s.high) &&
+    Number.isFinite(s.low) &&
+    !Number.isFinite(s.pos_pct) &&
+    s.high !== s.low
+  ) {
     s.pos_pct = ((s.today_close - s.low) / (s.high - s.low)) * 100;
   }
+  if (s.price_range_enabled && !Number.isFinite(s.price_range_ratio) && s.count > 0) {
+    s.price_range_ratio = (s.price_range_count || 0) / s.count;
+  }
 
-  // 日期字段目前后端没给，先兜底为 "-"
-  s.high_date_short = s.high_date_short ?? "-";
-  s.low_date_short  = s.low_date_short  ?? "-";
-  s.turnover_max_date_short = s.turnover_max_date_short ?? "-";
-  s.turnover_min_date_short = s.turnover_min_date_short ?? "-";
+  return s;
+}
 
+function getBuyInfo() {
+  const buy = parseOptionalNumber(valueOf(els.buy));
+  const shares = parseOptionalNumber(valueOf(els.shares));
+  return {
+    buy: buy != null && buy > 0 ? buy : null,
+    shares: shares != null && shares > 0 ? shares : null,
+  };
+}
 
-  const cn = cnDate;
-  const f2 = x => (x == null || !Number.isFinite(x)) ? "-" : Number(x).toFixed(2);
-  const pct = x => (x == null || !Number.isFinite(x)) ? "-" : (x * 100).toFixed(2) + "%";
-  const pctRaw = x => (x == null || !Number.isFinite(x)) ? "-" : Number(x).toFixed(2) + "%";
+function renderSummary(summary, buyInfo) {
+  if (!summary) {
+    renderEmptyState();
+    return;
+  }
 
-  const todayClose = s.today_close;
+  const pos = clamp(summary.pos_pct ?? 0, 0, 100);
+  const todayClose = summary.today_close;
   const buy = buyInfo.buy;
   let buyLine = "";
-  if (buy) {
+
+  if (buy != null && Number.isFinite(todayClose)) {
     const diff = todayClose - buy;
-    const ret = diff / buy;
-    const shares = buyInfo.shares;
+    const ret = buy === 0 ? null : diff / buy;
+    const floatingPnl = buyInfo.shares ? diff * buyInfo.shares : null;
     buyLine = `
       <div class="krow">
-        <div>我的买入价：<b>${f2(buy)}</b></div>
-        <div>每股盈亏：<b>${diff >= 0 ? "+" : ""}${f2(diff)}</b></div>
-        <div>收益率：<b>${pct(ret)}</b></div>
-        <div>浮动盈亏（元）：<b>${shares ? ((diff * shares) >= 0 ? "+" : "") + f2(diff * shares) : "-"}</b></div>
+        <div class="kcell">我的买入价：<b>${formatNumber(buy)}</b></div>
+        <div class="kcell">每股盈亏：<b>${withSign(diff)}</b></div>
+        <div class="kcell">收益率：<b>${formatPercent(ret)}</b></div>
+        <div class="kcell">浮动盈亏（元）：<b>${floatingPnl == null ? "-" : withSign(floatingPnl)}</b></div>
       </div>
     `;
   }
 
-  const pos = Math.max(0, Math.min(100, s.pos_pct || 0));
+  const priceRangeLine = summary.price_range_enabled
+    ? `
+      <div class="krow">
+        <div class="kcell">价格区间：<b>${formatNumber(summary.price_range_low)} ~ ${formatNumber(summary.price_range_high)}</b></div>
+        <div class="kcell">命中次数：<b>${summary.price_range_count ?? 0}</b></div>
+        <div class="kcell">命中占比：<b>${formatPercent(summary.price_range_ratio)}</b></div>
+        <div class="kcell">命中日期：<b>${previewDates(summary.price_range_dates)}</b></div>
+      </div>
+    `
+    : `
+      <div class="muted">未启用价格区间命中统计。</div>
+    `;
 
   setSummary(`
     <div class="krow">
-      <div>股票：<b>${(s.name_cn || "-")}（${(s.ts_code || "-")}）</b></div>
-      <div>截至：<b>${cn(s.end)}</b></div>
-      <div>今日收盘价：<b>${f2(s.today_close)}</b></div>
-      <div>区间均值：<b>${f2(s.mean)}</b>（${pct(s.dev_vs_mean)} 相对均值）</div>
-      <div>区间振幅：<b>${pct(s.amplitude)}</b></div>
+      <div class="kcell">股票：<b>${escapeHtml(summary.name_cn || "-")}（${escapeHtml(summary.ts_code || "-")}）</b></div>
+      <div class="kcell">截至：<b>${cnDate(summary.end)}</b></div>
+      <div class="kcell">最新收盘价：<b>${formatNumber(summary.today_close)}</b></div>
+      <div class="kcell">区间均价：<b>${formatNumber(summary.mean)}</b>（${formatPercent(summary.dev_vs_mean)} 相对均值）</div>
     </div>
 
     <div class="krow">
-      <div>区间最高价：<b>${f2(s.high)}</b>（${s.high_date_short}）</div>
-      <div>区间最低价：<b>${f2(s.low)}</b>（${s.low_date_short}）</div>
-      <div>今日相对最低涨幅：<b>${pct(s.rise_from_low)}</b></div>
-      <div>今日相对最高回撤：<b>${pct(s.drawdown_from_high)}</b></div>
+      <div class="kcell">区间最高价：<b>${formatNumber(summary.high)}</b>（${escapeHtml(summary.high_date_short || "-")}）</div>
+      <div class="kcell">区间最低价：<b>${formatNumber(summary.low)}</b>（${escapeHtml(summary.low_date_short || "-")}）</div>
+      <div class="kcell">相对区间低点：<b>${formatPercent(summary.rise_from_low)}</b></div>
+      <div class="kcell">相对区间高点回撤：<b>${formatPercent(summary.drawdown_from_high)}</b></div>
     </div>
 
     <div class="krow">
-      <div>换手率（最新）：<b>${pctRaw(s.turnover_latest)}</b></div>
-      <div>换手率（均值）：<b>${pctRaw(s.turnover_mean)}</b></div>
-      <div>换手率（最高）：<b>${pctRaw(s.turnover_max)}</b>（${s.turnover_max_date_short || "-"}）</div>
-      <div>换手率（最低）：<b>${pctRaw(s.turnover_min)}</b>（${s.turnover_min_date_short || "-"}）</div>
+      <div class="kcell">换手率（最新）：<b>${formatPercentRaw(summary.turnover_latest)}</b></div>
+      <div class="kcell">换手率（均值）：<b>${formatPercentRaw(summary.turnover_mean)}</b></div>
+      <div class="kcell">换手率（最高）：<b>${formatPercentRaw(summary.turnover_max)}</b>（${escapeHtml(summary.turnover_max_date_short || "-")}）</div>
+      <div class="kcell">换手率（最低）：<b>${formatPercentRaw(summary.turnover_min)}</b>（${escapeHtml(summary.turnover_min_date_short || "-")}）</div>
     </div>
 
     <div class="krow">
-      <div>区间位置：<b>${pos.toFixed(1)}%</b></div>
-      <div class="progress"><div class="bar" style="width:${pos}%;"></div></div>
-      <div class="muted">0% 靠近最低；100% 靠近最高</div>
+      <div class="kcell">区间振幅：<b>${formatPercent(summary.amplitude)}</b></div>
+      <div class="kcell">区间位置：<b>${pos.toFixed(1)}%</b></div>
+      <div class="kcell"><div class="progress"><div class="bar" style="width:${pos}%;"></div></div></div>
+      <div class="kcell muted">0% 靠近区间低点；100% 靠近区间高点。</div>
     </div>
 
+    ${priceRangeLine}
     ${buyLine}
-    <div class="muted">说明：本页“今日”使用区间内最新交易日收盘价（非盘中实时）。</div>
+    <div class="muted">说明：这里的“最新收盘价”使用所选区间内最新交易日的收盘价，不是盘中实时价。</div>
   `);
 }
 
-function renderCharts(items, s) {
-  if (!items || !items.length) return;
+function renderCharts(items, summary) {
+  clearCharts();
+  if (!Array.isArray(items) || !items.length || !window.Plotly) {
+    return;
+  }
 
-  const f2 = (v) => (Number.isFinite(v) ? Number(v).toFixed(2) : "-");
+  const x = items.map((item) => toDateObj(item.trade_date));
+  const closes = items.map((item) => item.close);
+  const tors = items.map((item) => item.turnover_rate ?? null);
+  const hitItems = items.filter((item) => item.in_price_range);
 
-  const x = items.map(i => toDateObj(i.trade_date));
-  const yAll = items.map(i => i.close);
-  const y = yAll.filter(v => Number.isFinite(v));
-  if (!y.length) return;
-
-  // summary 没给/字段名不一致时，用 y 自己算
-  const high = Number.isFinite(s?.high) ? s.high : Math.max(...y);
-  const low  = Number.isFinite(s?.low)  ? s.low  : Math.min(...y);
-  const mean = Number.isFinite(s?.mean) ? s.mean : (y.reduce((a,b)=>a+b,0) / y.length);
-
-  // index 找不到就兜底到最后一天，避免 x[ -1 ] 变 undefined
-  const highIdx0 = yAll.indexOf(high);
-  const lowIdx0  = yAll.indexOf(low);
-  const highIdx = highIdx0 >= 0 ? highIdx0 : (x.length - 1);
-  const lowIdx  = lowIdx0  >= 0 ? lowIdx0  : (x.length - 1);
-
-  const tracesClose = [
+  const closeTraces = [
     {
-      x, y: yAll,
+      x,
+      y: closes,
       type: "scatter",
       mode: "lines",
       name: "收盘价",
-      hovertemplate: "日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>"
+      line: { color: "#111", width: 2 },
+      hovertemplate: "日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>",
     },
     {
       x: [x[x.length - 1]],
-      y: [yAll[yAll.length - 1]],
+      y: [closes[closes.length - 1]],
       type: "scatter",
       mode: "markers",
       name: "最新收盘",
-      hovertemplate: "最新收盘<br>日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>"
+      marker: { size: 9, color: "#111" },
+      hovertemplate: "最新收盘<br>日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>",
     },
     {
-      x: [x[highIdx]],
-      y: [high],
+      x: [x[findValueIndex(closes, summary.high)]],
+      y: [summary.high],
       type: "scatter",
       mode: "markers+text",
       name: "区间最高",
-      text: [`最高 ${f2(high)}`],
+      marker: { size: 10, color: "#b42318" },
+      text: [`最高 ${formatNumber(summary.high)}`],
       textposition: "top center",
-      hovertemplate: "区间最高<br>日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>"
+      hovertemplate: "区间最高<br>日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>",
     },
     {
-      x: [x[lowIdx]],
-      y: [low],
+      x: [x[findValueIndex(closes, summary.low)]],
+      y: [summary.low],
       type: "scatter",
       mode: "markers+text",
       name: "区间最低",
-      text: [`最低 ${f2(low)}`],
+      marker: { size: 10, color: "#0c6b58" },
+      text: [`最低 ${formatNumber(summary.low)}`],
       textposition: "bottom center",
-      hovertemplate: "区间最低<br>日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>"
+      hovertemplate: "区间最低<br>日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>",
     },
   ];
 
-  const layoutClose = {
-    title: `${s?.ts_code || ""}｜区间 ${cnDate(s?.start || s?.start_date || "")} ~ ${cnDate(s?.end || s?.end_date || "")}｜共 ${s?.count ?? items.length} 个交易日`,
-    margin: { l: 40, r: 20, t: 60, b: 40 },
-    xaxis: { title: "日期" },
-    yaxis: { title: "收盘价" },
-    hovermode: "x unified",
-    shapes: [
-      { type:"rect", xref:"x", yref:"y", x0:x[0], x1:x[x.length-1], y0:low, y1:high,
-        fillcolor:"rgba(0,0,0,0.05)", line:{ width:0 }, layer:"below" },
-      ...[mean, high, low].map(v => ({
-        type:"line", xref:"x", yref:"y", x0:x[0], x1:x[x.length-1], y0:v, y1:v,
-        line:{ width:1, dash:"dot" }
-      }))
-    ],
-    annotations: [
-      { x:x[x.length-1], y:mean, xref:"x", yref:"y", text:`均值：${f2(mean)}`, showarrow:false, xanchor:"left" },
-      { x:x[x.length-1], y:high, xref:"x", yref:"y", text:`最高：${f2(high)}`, showarrow:false, xanchor:"left" },
-      { x:x[x.length-1], y:low,  xref:"x", yref:"y", text:`最低：${f2(low)}`,  showarrow:false, xanchor:"left" },
-    ],
-    legend: { orientation:"h", y:1.12, x:1, xanchor:"right" }
-  };
+  if (summary.price_range_enabled && hitItems.length) {
+    closeTraces.push({
+      x: hitItems.map((item) => toDateObj(item.trade_date)),
+      y: hitItems.map((item) => item.close),
+      type: "scatter",
+      mode: "markers",
+      name: "命中价格区间",
+      marker: { size: 9, color: "#175cd3", symbol: "diamond" },
+      hovertemplate: "命中区间<br>日期=%{x|%Y年%m月%d日}<br>收盘=%{y:.2f}<extra></extra>",
+    });
+  }
 
-  Plotly.newPlot("chartClose", tracesClose, layoutClose, { displayModeBar: false, responsive: true });
+  const shapes = [];
+  if (Number.isFinite(summary.mean)) {
+    shapes.push({
+      type: "line",
+      xref: "x",
+      yref: "y",
+      x0: x[0],
+      x1: x[x.length - 1],
+      y0: summary.mean,
+      y1: summary.mean,
+      line: { width: 1, dash: "dot", color: "#667085" },
+    });
+  }
+  shapes.push(...buildPriceRangeShapes(summary, x));
 
-  // 换手率图（柱状）
-  const tor = items.map(i => (i.turnover_rate == null ? null : i.turnover_rate));
-  Plotly.newPlot("chartTor", [
+  const annotations = [];
+  if (Number.isFinite(summary.mean)) {
+    annotations.push({
+      x: x[x.length - 1],
+      y: summary.mean,
+      xref: "x",
+      yref: "y",
+      text: `均值：${formatNumber(summary.mean)}`,
+      showarrow: false,
+      xanchor: "left",
+    });
+  }
+  if (Number.isFinite(summary.high)) {
+    annotations.push({
+      x: x[x.length - 1],
+      y: summary.high,
+      xref: "x",
+      yref: "y",
+      text: `最高：${formatNumber(summary.high)}`,
+      showarrow: false,
+      xanchor: "left",
+    });
+  }
+  if (Number.isFinite(summary.low)) {
+    annotations.push({
+      x: x[x.length - 1],
+      y: summary.low,
+      xref: "x",
+      yref: "y",
+      text: `最低：${formatNumber(summary.low)}`,
+      showarrow: false,
+      xanchor: "left",
+    });
+  }
+  if (summary.price_range_enabled && Number.isFinite(summary.price_range_high)) {
+    annotations.push({
+      x: x[0],
+      y: summary.price_range_high,
+      xref: "x",
+      yref: "y",
+      text: `价格区间：${formatNumber(summary.price_range_low)} ~ ${formatNumber(summary.price_range_high)}`,
+      showarrow: false,
+      xanchor: "left",
+      yanchor: "bottom",
+      bgcolor: "rgba(23,92,211,0.08)",
+    });
+  }
+
+  Plotly.newPlot(
+    "chartClose",
+    closeTraces,
     {
-      x,
-      y: tor,
-      type: "bar",
-      name: "换手率（%）",
-      hovertemplate: "日期=%{x|%Y年%m月%d日}<br>换手率=%{y:.2f}%<extra></extra>"
-    }
-  ], {
-    margin: { l: 40, r: 20, t: 10, b: 40 },
-    xaxis: { title: "日期" },
-    yaxis: { title: "换手率（%）" },
-  }, { displayModeBar: false, responsive: true });
+      title: `${summary.ts_code || ""}｜${cnDate(summary.start)} ~ ${cnDate(summary.end)}｜共 ${summary.count ?? items.length} 个交易日`,
+      margin: { l: 48, r: 24, t: 64, b: 40 },
+      xaxis: { title: "日期" },
+      yaxis: { title: "收盘价" },
+      hovermode: "x unified",
+      legend: { orientation: "h", y: 1.14, x: 1, xanchor: "right" },
+      shapes,
+      annotations,
+    },
+    { displayModeBar: false, responsive: true }
+  );
+
+  Plotly.newPlot(
+    "chartTor",
+    [
+      {
+        x,
+        y: tors,
+        type: "bar",
+        name: "换手率（%）",
+        marker: { color: "#444ce7" },
+        hovertemplate: "日期=%{x|%Y年%m月%d日}<br>换手率=%{y:.2f}%<extra></extra>",
+      },
+    ],
+    {
+      margin: { l: 48, r: 24, t: 16, b: 40 },
+      xaxis: { title: "日期" },
+      yaxis: { title: "换手率（%）" },
+    },
+    { displayModeBar: false, responsive: true }
+  );
 }
 
+function renderTable(items, summary) {
+  if (!Array.isArray(items) || !items.length) {
+    els.table.innerHTML = "<div class=\"muted\">暂无数据。</div>";
+    return;
+  }
 
-function renderTable(items) {
-  const rows = items.slice().reverse(); // 最近在上
+  const showRangeColumn = Boolean(summary?.price_range_enabled);
+  const rows = items.slice().reverse();
+
   const html = `
     <table>
-      <thead><tr><th>日期</th><th>收盘价</th><th>换手率（%）</th></tr></thead>
+      <thead>
+        <tr>
+          <th>日期</th>
+          <th>收盘价</th>
+          <th>换手率（%）</th>
+          ${showRangeColumn ? "<th>是否命中价格区间</th>" : ""}
+        </tr>
+      </thead>
       <tbody>
-        ${rows.map(r => `
-          <tr>
-            <td>${cnDate(r.trade_date)}</td>
-            <td>${Number(r.close).toFixed(2)}</td>
-            <td>${r.turnover_rate == null ? "-" : Number(r.turnover_rate).toFixed(2)}</td>
-          </tr>
-        `).join("")}
+        ${rows
+          .map((item) => {
+            const hitCell = showRangeColumn
+              ? `<td><span class="pill ${item.in_price_range ? "pill-hit" : "pill-miss"}">${item.in_price_range ? "命中" : "未命中"}</span></td>`
+              : "";
+
+            return `
+              <tr>
+                <td>${cnDate(item.trade_date)}</td>
+                <td>${formatNumber(item.close)}</td>
+                <td>${formatNumber(item.turnover_rate)}</td>
+                ${hitCell}
+              </tr>
+            `;
+          })
+          .join("")}
       </tbody>
     </table>
   `;
-  document.getElementById("table").innerHTML = html;
+
+  els.table.innerHTML = html;
 }
 
 function downloadCsv() {
   if (!lastPayload?.items?.length) return;
-  const items = lastPayload.items;
 
-  const header = ["日期", "收盘价", "换手率(%)"];
-  const lines = [header.join(",")];
+  const includeRangeColumn = Boolean(lastPayload.summary?.price_range_enabled);
+  const header = ["日期", "收盘价", "换手率（%）"];
+  if (includeRangeColumn) header.push("是否命中价格区间");
 
-  for (const r of items) {
-    lines.push([
-      cnDate(r.trade_date),
-      Number(r.close).toFixed(2),
-      r.turnover_rate == null ? "" : Number(r.turnover_rate).toFixed(2),
-    ].join(","));
+  const lines = [header.map(csvEscape).join(",")];
+
+  for (const item of lastPayload.items) {
+    const row = [
+      cnDate(item.trade_date),
+      formatNumber(item.close),
+      item.turnover_rate == null ? "" : formatNumber(item.turnover_rate),
+    ];
+    if (includeRangeColumn) row.push(item.in_price_range ? "命中" : "未命中");
+    lines.push(row.map(csvEscape).join(","));
   }
 
-  // UTF-8 BOM，Excel 打开不乱码
   const csv = "\ufeff" + lines.join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  downloadBlob(blob, filenameBase() + ".csv");
+  downloadBlob(blob, `${filenameBase()}.csv`);
 }
 
 function exportXlsx() {
-  if (!lastPayload?.items?.length || !lastPayload?.summary) return;
+  if (!lastPayload?.items?.length || !lastPayload?.summary || !window.XLSX) return;
 
-  const s = lastPayload.summary;
-  const items = lastPayload.items;
+  const summary = lastPayload.summary;
   const buyInfo = getBuyInfo();
-
-  // ====== Sheet1：查询概览 ======
-  const rows = [
-    ["股票代码", s.ts_code],
-    ["股票名字", s.name_cn ],
-    ["区间选择", s.mode === "n" ? "最近N个交易日" : "自定义起止日期"],
-    ["区间开始", cnDate(s.start)],
-    ["区间结束（最新交易日）", cnDate(s.end)],
-    ["交易日数量", s.count],
-    ["今日收盘价", s.today_close],
-    ["区间均值", s.mean],
-    ["区间最高价", s.high],
-    ["最高价出现", s.high_date_short],
-    ["区间最低价", s.low],
-    ["最低价出现", s.low_date_short],
-    ["今日相对最低涨幅(%)", (s.rise_from_low * 100)],
-    ["今日相对最高回撤(%)", (s.drawdown_from_high * 100)],
-    ["区间振幅(%)", (s.amplitude * 100)],
-    ["区间位置(%)", s.pos_pct],
-
-    // ===== 新增：换手率 =====
-    ["换手率（最新，%）", s.turnover_latest],
-    ["换手率（均值，%）", s.turnover_mean],
-    ["换手率（最高，%）", s.turnover_max],
-    ["换手率最高出现", s.turnover_max_date_short],
-    ["换手率（最低，%）", s.turnover_min],
-    ["换手率最低出现", s.turnover_min_date_short],
+  const overviewRows = [
+    ["股票代码", summary.ts_code],
+    ["股票名称", summary.name_cn || ""],
+    ["区间模式", summary.mode === "n" ? "最近 N 个交易日" : "自定义起止日期"],
+    ["区间开始", cnDate(summary.start)],
+    ["区间结束", cnDate(summary.end)],
+    ["交易日数量", summary.count],
+    ["最新收盘价", summary.today_close],
+    ["区间均价", summary.mean],
+    ["区间最高价", summary.high],
+    ["最高价日期", summary.high_date_short || "-"],
+    ["区间最低价", summary.low],
+    ["最低价日期", summary.low_date_short || "-"],
+    ["相对区间低点(%)", toPercentNumber(summary.rise_from_low)],
+    ["相对区间高点回撤(%)", toPercentNumber(summary.drawdown_from_high)],
+    ["区间振幅(%)", toPercentNumber(summary.amplitude)],
+    ["区间位置(%)", summary.pos_pct],
+    ["换手率最新值(%)", summary.turnover_latest],
+    ["换手率均值(%)", summary.turnover_mean],
+    ["换手率最高值(%)", summary.turnover_max],
+    ["换手率最高日期", summary.turnover_max_date_short || "-"],
+    ["换手率最低值(%)", summary.turnover_min],
+    ["换手率最低日期", summary.turnover_min_date_short || "-"],
   ];
 
-  if (buyInfo.buy) {
-    const diff = s.today_close - buyInfo.buy;
-    const ret = diff / buyInfo.buy;
-    rows.push(["我的买入价", buyInfo.buy]);
-    rows.push(["每股盈亏", diff]);
-    rows.push(["收益率(%)", ret * 100]);
-    if (buyInfo.shares) rows.push(["浮动盈亏(元)", diff * buyInfo.shares]);
+  if (summary.price_range_enabled) {
+    overviewRows.push(["价格区间下限", summary.price_range_low]);
+    overviewRows.push(["价格区间上限", summary.price_range_high]);
+    overviewRows.push(["命中次数", summary.price_range_count ?? 0]);
+    overviewRows.push(["命中占比(%)", toPercentNumber(summary.price_range_ratio)]);
+    overviewRows.push(["命中日期", (summary.price_range_dates || []).map(cnDate).join("、") || "-"]);
   }
 
-  // ====== Sheet2：区间数据 ======
-  const sheet2 = [
-    ["日期", "收盘价", "换手率（%）"],
-    ...items.map(r => [
-      cnDate(r.trade_date),
-      Number(r.close).toFixed(2),
-      r.turnover_rate == null ? "" : Number(r.turnover_rate).toFixed(2),
-    ])
+  if (buyInfo.buy != null && Number.isFinite(summary.today_close)) {
+    const diff = summary.today_close - buyInfo.buy;
+    overviewRows.push(["我的买入价", buyInfo.buy]);
+    overviewRows.push(["每股盈亏", diff]);
+    overviewRows.push(["收益率(%)", toPercentNumber(diff / buyInfo.buy)]);
+    if (buyInfo.shares) overviewRows.push(["浮动盈亏(元)", diff * buyInfo.shares]);
+  }
+
+  const detailRows = [
+    ["日期", "收盘价", "换手率（%）", ...(summary.price_range_enabled ? ["是否命中价格区间"] : [])],
+    ...lastPayload.items.map((item) => [
+      cnDate(item.trade_date),
+      Number.isFinite(item.close) ? Number(item.close) : "",
+      Number.isFinite(item.turnover_rate) ? Number(item.turnover_rate) : "",
+      ...(summary.price_range_enabled ? [item.in_price_range ? "命中" : "未命中"] : []),
+    ]),
   ];
 
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "查询概览");
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sheet2), "区间数据");
-
-  XLSX.writeFile(wb, filenameBase() + "_查询信息.xlsx");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(overviewRows), "查询概览");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(detailRows), "区间明细");
+  XLSX.writeFile(wb, `${filenameBase()}_查询结果.xlsx`);
 }
 
-function filenameBase() {
-  const code = (val("code") || "stock").trim().toUpperCase();
-  const name = (lastPayload?.summary?.name_cn || lastPayload?.name_cn || "").trim();
-  const today = toYmd(new Date());
-  const safeName = name.replace(/[\\/:*?"<>|]/g, ""); // 防 windows 文件名非法字符
-  return safeName ? `${safeName}_${code}_${today}` : `${code}_${today}`;
+function handleQueryError(message) {
+  lastPayload = null;
+  disableDownloads(true);
+  clearVisuals();
+  setSummary(`<div class="error">查询失败：${escapeHtml(message)}</div>`);
 }
 
+function renderEmptyState() {
+  clearVisuals();
+  setSummary("<div class=\"muted\">请输入股票代码并发起查询。</div>");
+}
+
+function setLoadingState(isLoading) {
+  els.btn.disabled = isLoading;
+  els.btn.textContent = isLoading ? "查询中..." : "查询";
+  if (isLoading) disableDownloads(true);
+}
+
+function clearVisuals() {
+  clearCharts();
+  els.table.innerHTML = "<div class=\"muted\">暂无数据。</div>";
+}
+
+function clearCharts() {
+  const closeChart = document.getElementById("chartClose");
+  const turnoverChart = document.getElementById("chartTor");
+  if (window.Plotly) {
+    Plotly.purge(closeChart);
+    Plotly.purge(turnoverChart);
+  }
+  closeChart.innerHTML = "";
+  turnoverChart.innerHTML = "";
+}
 
 function disableDownloads(disabled) {
-  document.getElementById("downloadCsv").disabled = disabled;
-  document.getElementById("exportXlsx").disabled = disabled;
+  els.downloadCsv.disabled = disabled;
+  els.exportXlsx.disabled = disabled;
 }
 
 function setSummary(html) {
-  document.getElementById("summary").innerHTML = html;
+  els.summary.innerHTML = html;
 }
 
-function val(id) { return document.getElementById(id).value.trim(); }
+function valueOf(input) {
+  return input.value.trim();
+}
 
-// ===== date helpers =====
-function toYmd(d) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}${m}${day}`;
+function parseOptionalNumber(raw) {
+  if (raw === "") return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
 }
-function addDays(d, delta) {
-  const x = new Date(d.getTime());
-  x.setDate(x.getDate() + delta);
-  return x;
+
+function formatNumber(value) {
+  return Number.isFinite(value) ? Number(value).toFixed(2) : "-";
 }
+
+function formatPercent(value) {
+  return Number.isFinite(value) ? `${(Number(value) * 100).toFixed(2)}%` : "-";
+}
+
+function formatPercentRaw(value) {
+  return Number.isFinite(value) ? `${Number(value).toFixed(2)}%` : "-";
+}
+
+function toPercentNumber(value) {
+  return Number.isFinite(value) ? Number(value) * 100 : "";
+}
+
+function withSign(value) {
+  if (!Number.isFinite(value)) return "-";
+  const num = Number(value);
+  return `${num >= 0 ? "+" : ""}${num.toFixed(2)}`;
+}
+
+function previewDates(dates) {
+  if (!Array.isArray(dates) || !dates.length) return "-";
+  const preview = dates.slice(0, 6).map(cnDate).join("、");
+  return dates.length > 6 ? `${preview} 等 ${dates.length} 次` : preview;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function csvEscape(value) {
+  const text = String(value ?? "");
+  if (/[",\n]/.test(text)) {
+    return `"${text.replace(/"/g, "\"\"")}"`;
+  }
+  return text;
+}
+
+function filenameBase() {
+  const code = (lastPayload?.summary?.ts_code || valueOf(els.code) || "stock").trim().toUpperCase();
+  const name = (lastPayload?.summary?.name_cn || "").trim();
+  const end = lastPayload?.summary?.end || toYmd(new Date());
+  const safeName = name.replace(/[\\/:*?"<>|]/g, "");
+  return safeName ? `${safeName}_${code}_${end}` : `${code}_${end}`;
+}
+
+function isYmd(value) {
+  if (!/^\d{8}$/.test(value)) return false;
+  const date = toDateObj(value);
+  return toYmd(date) === value;
+}
+
+function toYmd(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}${m}${d}`;
+}
+
+function addDays(date, delta) {
+  const next = new Date(date.getTime());
+  next.setDate(next.getDate() + delta);
+  return next;
+}
+
 function toDateObj(yyyymmdd) {
-  const y = Number(yyyymmdd.slice(0,4));
-  const m = Number(yyyymmdd.slice(4,6)) - 1;
-  const d = Number(yyyymmdd.slice(6,8));
+  const y = Number(yyyymmdd.slice(0, 4));
+  const m = Number(yyyymmdd.slice(4, 6)) - 1;
+  const d = Number(yyyymmdd.slice(6, 8));
   return new Date(y, m, d);
 }
+
 function cnDate(yyyymmdd) {
-  if (!/^\d{8}$/.test(yyyymmdd)) return yyyymmdd;
-  const y = Number(yyyymmdd.slice(0,4));
-  const m = Number(yyyymmdd.slice(4,6));
-  const d = Number(yyyymmdd.slice(6,8));
-  return `${y}年${m}月${d}日`;
+  if (!isYmd(yyyymmdd)) return escapeHtml(yyyymmdd || "-");
+  const date = toDateObj(yyyymmdd);
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
 }
 
-// ===== download helper =====
+function shortDate(yyyymmdd) {
+  return isYmd(yyyymmdd) ? cnDate(yyyymmdd) : "-";
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(Number(value) || 0, min), max);
+}
+
+function findValueIndex(values, target) {
+  const index = values.findIndex((value) => Number.isFinite(target) && value === target);
+  return index >= 0 ? index : values.length - 1;
+}
+
+function buildPriceRangeShapes(summary, xValues) {
+  if (!summary.price_range_enabled || !Number.isFinite(summary.price_range_low) || !Number.isFinite(summary.price_range_high)) {
+    return [];
+  }
+
+  if (summary.price_range_low === summary.price_range_high) {
+    return [
+      {
+        type: "line",
+        xref: "x",
+        yref: "y",
+        x0: xValues[0],
+        x1: xValues[xValues.length - 1],
+        y0: summary.price_range_low,
+        y1: summary.price_range_low,
+        line: { width: 2, dash: "dash", color: "#175cd3" },
+      },
+    ];
+  }
+
+  return [
+    {
+      type: "rect",
+      xref: "x",
+      yref: "y",
+      x0: xValues[0],
+      x1: xValues[xValues.length - 1],
+      y0: summary.price_range_low,
+      y1: summary.price_range_high,
+      fillcolor: "rgba(23,92,211,0.08)",
+      line: { width: 0 },
+      layer: "below",
+    },
+  ];
+}
+
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
