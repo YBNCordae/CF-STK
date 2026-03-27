@@ -60,7 +60,7 @@
 
         <div class="query-group query-group-highlight">
           <h3>价格区间统计</h3>
-          <p class="group-desc">为价格区间单独统计命中次数、命中占比、首次与最近命中日期。</p>
+          <p class="group-desc">为价格区间单独统计命中次数、命中占比、首次与最近命中日期，并按自定义步长拆分价格档位。</p>
           <div class="input-grid">
             <div>
               <label for="priceLow">价格下限</label>
@@ -71,7 +71,9 @@
               <input id="priceHigh" type="number" min="0" step="0.01" placeholder="例如 60.00" />
             </div>
           </div>
-          <p class="help-text">若同时填写上下限，系统会用所选区间内的收盘价进行命中统计。</p>
+          <label for="priceStep">统计步长</label>
+          <input id="priceStep" type="number" min="0.01" step="0.01" value="0.50" placeholder="例如 0.50" />
+          <p class="help-text">示例：15.00 到 16.00、步长 0.50，会按 15.00、15.50、16.00 三个档位统计命中次数，并列出对应日期。</p>
         </div>
 
         <div class="query-group">

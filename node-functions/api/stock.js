@@ -1,3 +1,8 @@
+const DEFAULT_PRICE_STEP = 0.5;
+const MAX_PRICE_STEP_BUCKETS = 400;
+const MIN_PRICE_ARITH_PRECISION = 4;
+const MAX_PRICE_ARITH_PRECISION = 6;
+
 export default async function onRequest(context) {
   try {
     const url = new URL(context.request.url);
@@ -59,8 +64,9 @@ function textParam(searchParams, key) {
 function readPriceRange(searchParams) {
   const lowRaw = textParam(searchParams, "price_low");
   const highRaw = textParam(searchParams, "price_high");
+  const stepRaw = textParam(searchParams, "price_step");
 
-  if (!lowRaw && !highRaw) {
+  if (!lowRaw && !highRaw && !stepRaw) {
     return { value: null };
   }
 
@@ -70,8 +76,9 @@ function readPriceRange(searchParams) {
 
   const low = Number(lowRaw);
   const high = Number(highRaw);
-  if (!Number.isFinite(low) || !Number.isFinite(high)) {
-    return { error: "价格区间必须是有效数字" };
+  const step = stepRaw ? Number(stepRaw) : DEFAULT_PRICE_STEP;
+  if (!Number.isFinite(low) || !Number.isFinite(high) || !Number.isFinite(step)) {
+    return { error: "价格区间和步长必须是有效数字" };
   }
   if (low < 0 || high < 0) {
     return { error: "价格区间不能为负数" };
@@ -79,8 +86,44 @@ function readPriceRange(searchParams) {
   if (low > high) {
     return { error: "价格区间下限不能大于上限" };
   }
+  if (step <= 0) {
+    return { error: "价格步长必须大于 0" };
+  }
 
-  return { value: { low, high } };
+  const displayPrecision = Math.max(decimalPlaces(lowRaw), decimalPlaces(highRaw), decimalPlaces(stepRaw || String(DEFAULT_PRICE_STEP)), 2);
+  const arithmeticPrecision = Math.min(
+    Math.max(displayPrecision, MIN_PRICE_ARITH_PRECISION),
+    MAX_PRICE_ARITH_PRECISION
+  );
+  const scale = 10 ** arithmeticPrecision;
+  const lowScaled = toScaledInt(low, scale);
+  const highScaled = toScaledInt(high, scale);
+  const stepScaled = toScaledInt(step, scale);
+
+  if (stepScaled <= 0) {
+    return { error: "价格步长过小，请提高步长后重试" };
+  }
+
+  const stepPoints = buildPriceStepPoints(lowScaled, highScaled, stepScaled);
+  if (stepPoints.length > MAX_PRICE_STEP_BUCKETS) {
+    return {
+      error: `按当前区间和步长会生成 ${stepPoints.length} 个价格档位，超过上限 ${MAX_PRICE_STEP_BUCKETS}，请调大步长`,
+    };
+  }
+
+  return {
+    value: {
+      low,
+      high,
+      step,
+      scale,
+      display_precision: displayPrecision,
+      low_scaled: lowScaled,
+      high_scaled: highScaled,
+      step_scaled: stepScaled,
+      step_points: stepPoints,
+    },
+  };
 }
 
 function resolveDateRange(searchParams, mode) {
@@ -136,6 +179,8 @@ function buildSummary(items, priceRange) {
   const hitItems = priceRange ? items.filter((item) => item.in_price_range) : [];
   const priceRangeCount = hitItems.length;
   const priceRangeRatio = items.length ? priceRangeCount / items.length : null;
+  const priceStepStats = priceRange ? buildPriceStepStats(hitItems, priceRange) : [];
+  const activePriceStepCount = priceStepStats.filter((stat) => stat.hit_count > 0).length;
 
   return {
     start_date: items[0]?.trade_date || null,
@@ -159,10 +204,76 @@ function buildSummary(items, priceRange) {
     price_range_enabled: Boolean(priceRange),
     price_range_low: priceRange?.low ?? null,
     price_range_high: priceRange?.high ?? null,
+    price_step: priceRange?.step ?? null,
     price_range_count: priceRange ? priceRangeCount : null,
     price_range_ratio: priceRange ? priceRangeRatio : null,
     price_range_dates: priceRange ? hitItems.map((item) => item.trade_date) : [],
+    price_step_bucket_count: priceRange ? priceStepStats.length : 0,
+    price_step_hit_bucket_count: priceRange ? activePriceStepCount : 0,
+    price_step_stats: priceStepStats,
   };
+}
+
+function buildPriceStepStats(hitItems, priceRange) {
+  const stepPoints = priceRange.step_points || [];
+  const scale = priceRange.scale;
+  const stats = stepPoints.map((point, index) => {
+    const nextPoint = stepPoints[index + 1] ?? point;
+    const isExactHighPoint = index === stepPoints.length - 1;
+
+    return {
+      price_point: point / scale,
+      range_start: point / scale,
+      range_end: isExactHighPoint ? point / scale : nextPoint / scale,
+      is_exact_high_point: isExactHighPoint,
+      hit_count: 0,
+      dates: [],
+    };
+  });
+
+  for (const item of hitItems) {
+    const bucketIndex = findPriceStepBucketIndex(item.close, priceRange);
+    const bucket = stats[bucketIndex];
+    if (!bucket) continue;
+
+    bucket.hit_count += 1;
+    bucket.dates.push(item.trade_date);
+  }
+
+  const totalHits = hitItems.length;
+  return stats.map((bucket) => ({
+    ...bucket,
+    hit_ratio: totalHits ? bucket.hit_count / totalHits : 0,
+  }));
+}
+
+function findPriceStepBucketIndex(close, priceRange) {
+  const closeScaled = toScaledInt(close, priceRange.scale);
+  const lowScaled = priceRange.low_scaled;
+  const highScaled = priceRange.high_scaled;
+  const stepScaled = priceRange.step_scaled;
+  const lastIndex = (priceRange.step_points?.length || 1) - 1;
+
+  if (closeScaled >= highScaled) {
+    return Math.max(lastIndex, 0);
+  }
+
+  const offset = Math.max(0, closeScaled - lowScaled);
+  return clampIndex(Math.floor(offset / stepScaled), 0, Math.max(lastIndex, 0));
+}
+
+function buildPriceStepPoints(lowScaled, highScaled, stepScaled) {
+  const points = [];
+
+  for (let current = lowScaled; current <= highScaled; current += stepScaled) {
+    points.push(current);
+  }
+
+  if (!points.length || points[points.length - 1] !== highScaled) {
+    points.push(highScaled);
+  }
+
+  return points;
 }
 
 function findExtremeRecord(items, key, type) {
@@ -317,6 +428,20 @@ function normalizeTsCode(code) {
 
 function mean(arr) {
   return arr.length ? arr.reduce((sum, value) => sum + value, 0) / arr.length : null;
+}
+
+function decimalPlaces(raw) {
+  const value = String(raw || "");
+  if (!value.includes(".")) return 0;
+  return value.split(".")[1].length;
+}
+
+function toScaledInt(value, scale) {
+  return Math.round(Number(value) * scale);
+}
+
+function clampIndex(value, min, max) {
+  return Math.min(Math.max(value, min), max);
 }
 
 function isYmd(value) {

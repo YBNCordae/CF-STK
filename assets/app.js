@@ -7,6 +7,7 @@ const els = {
   end: document.getElementById("end"),
   priceLow: document.getElementById("priceLow"),
   priceHigh: document.getElementById("priceHigh"),
+  priceStep: document.getElementById("priceStep"),
   buy: document.getElementById("buy"),
   shares: document.getElementById("shares"),
   btn: document.getElementById("btn"),
@@ -71,6 +72,7 @@ function readFormState() {
     end: normalizeInputDate(valueOf(els.end)),
     priceLow: parseOptionalNumber(valueOf(els.priceLow)),
     priceHigh: parseOptionalNumber(valueOf(els.priceHigh)),
+    priceStep: parseOptionalNumber(valueOf(els.priceStep)),
   };
 }
 
@@ -92,6 +94,7 @@ function validateForm(form) {
 
   const hasLow = form.priceLow != null;
   const hasHigh = form.priceHigh != null;
+  const hasRange = hasLow && hasHigh;
   if (hasLow !== hasHigh) {
     return "价格区间需要同时填写下限和上限。";
   }
@@ -100,6 +103,9 @@ function validateForm(form) {
   }
   if (hasLow && form.priceLow > form.priceHigh) {
     return "价格下限不能大于价格上限。";
+  }
+  if (hasRange && (form.priceStep == null || form.priceStep <= 0)) {
+    return "启用价格区间统计时，步长必须大于 0。";
   }
 
   return "";
@@ -133,6 +139,7 @@ async function runQuery() {
     if (form.priceLow != null && form.priceHigh != null) {
       qs.set("price_low", String(form.priceLow));
       qs.set("price_high", String(form.priceHigh));
+      qs.set("price_step", String(form.priceStep));
     }
 
     const response = await fetch(`/api/stock?${qs.toString()}`);
@@ -238,6 +245,13 @@ function normalizeSummary(summary, items, meta) {
   if (normalized.price_range_enabled && !Number.isFinite(normalized.price_range_ratio) && normalized.count > 0) {
     normalized.price_range_ratio = (normalized.price_range_count || 0) / normalized.count;
   }
+  normalized.price_step = normalized.price_step ?? null;
+  normalized.price_step_bucket_count = normalized.price_step_bucket_count ?? normalized.price_step_stats?.length ?? 0;
+  normalized.price_step_hit_bucket_count =
+    normalized.price_step_hit_bucket_count ??
+    normalized.price_step_stats?.filter((stat) => (stat?.hit_count || 0) > 0).length ??
+    0;
+  normalized.price_step_stats = normalizePriceStepStats(normalized.price_step_stats);
 
   return normalized;
 }
@@ -251,7 +265,7 @@ function renderOverview(summary, items, buyInfo) {
   const pos = clamp(summary.pos_pct ?? 0, 0, 100);
   const buySection = renderBuySection(summary, buyInfo);
   const rangeEnabledText = summary.price_range_enabled
-    ? `已启用价格区间统计：${formatNumber(summary.price_range_low)} 元到 ${formatNumber(summary.price_range_high)} 元。`
+    ? `已启用价格区间统计：${formatNumber(summary.price_range_low)} 元到 ${formatNumber(summary.price_range_high)} 元，步长 ${formatNumber(summary.price_step)} 元。`
     : "当前未启用价格区间统计。";
 
   els.overviewPanel.innerHTML = `
@@ -317,14 +331,10 @@ function renderRangeStats(summary, items) {
           <h2>价格区间专项分析</h2>
         </div>
       </div>
-      <div class="empty-box">填写价格下限和上限后，这里会单独展示命中次数、命中占比、首次命中、最近命中，以及命中日期列表。</div>
+      <div class="empty-box">填写价格下限、上限和步长后，这里会展示整体命中概览，以及按价格档位拆分的次数和日期明细。</div>
     `;
     return;
   }
-
-  const hitDateTags = insights.hitDates.length
-    ? insights.hitDates.map((date) => `<span class="hit-tag">${cnDate(date)}</span>`).join("")
-    : '<span class="hit-tag">当前区间内没有命中日期</span>';
 
   els.rangeStatsPanel.innerHTML = `
     <div class="panel-head">
@@ -337,8 +347,10 @@ function renderRangeStats(summary, items) {
     <div class="range-block">
       <div class="range-banner">
         <span class="range-chip">统计区间：${formatNumber(summary.price_range_low)} 元至 ${formatNumber(summary.price_range_high)} 元</span>
+        <span class="range-chip">统计步长：${formatNumber(summary.price_step)} 元</span>
         <span class="range-chip">命中 ${insights.hitCount} 次</span>
         <span class="range-chip">命中占比 ${formatPercent(insights.hitRatio)}</span>
+        <span class="range-chip">命中档位 ${insights.activeStepCount}/${insights.stepCount}</span>
       </div>
     </div>
 
@@ -354,8 +366,9 @@ function renderRangeStats(summary, items) {
     </div>
 
     <div class="range-block">
-      <h3>命中日期列表</h3>
-      <div class="hit-list">${hitDateTags}</div>
+      <h3>按步长拆分的价格档位</h3>
+      <p class="help-text">每个档位展示覆盖价格范围、命中次数和对应交易日期。最后一个档位仅统计恰好等于区间上限的价格。</p>
+      ${renderPriceStepDistribution(insights)}
     </div>
   `;
 }
@@ -639,7 +652,9 @@ function buildRangeInsights(summary, items) {
   const distanceFromLastHit = lastHitIndex >= 0 ? items.length - 1 - lastHitIndex : null;
   const hitCloses = hitItems.map((item) => item.close).filter(Number.isFinite);
   const longestHitStreak = getLongestHitStreak(items);
-  const recentHitDates = hitItems.slice(-12).map((item) => item.trade_date);
+  const stepStats = Array.isArray(summary.price_step_stats) ? summary.price_step_stats : [];
+  const activeStepCount = stepStats.filter((stat) => (stat?.hit_count || 0) > 0).length;
+  const maxStepHitCount = stepStats.reduce((max, stat) => Math.max(max, stat?.hit_count || 0), 0);
 
   return {
     hitCount,
@@ -654,8 +669,58 @@ function buildRangeInsights(summary, items) {
     longestHitStreak,
     longestHitStreakNote: longestHitStreak > 0 ? "连续多个交易日都落在目标价格区间内" : "当前没有连续命中记录",
     distanceFromLastHitText: distanceFromLastHit == null ? "暂无" : `${distanceFromLastHit} 个交易日`,
-    hitDates: recentHitDates.length ? recentHitDates.reverse() : [],
+    stepCount: stepStats.length,
+    activeStepCount,
+    maxStepHitCount,
+    stepStats,
   };
+}
+
+function renderPriceStepDistribution(insights) {
+  if (!insights.stepStats.length) {
+    return '<div class="empty-box">当前没有生成价格档位统计。</div>';
+  }
+
+  const rows = insights.stepStats
+    .map((stat) => {
+      const width = insights.maxStepHitCount > 0 ? (stat.hit_count / insights.maxStepHitCount) * 100 : 0;
+      const dateTags = stat.dates.length
+        ? stat.dates.map((date) => `<span class="step-date-tag">${cnDate(date)}</span>`).join("")
+        : '<span class="step-empty-text">未命中</span>';
+
+      return `
+        <tr>
+          <td data-label="价格档位"><span class="step-price-point">${formatNumber(stat.price_point)}</span></td>
+          <td data-label="覆盖价格">${escapeHtml(formatStepCoverage(stat))}</td>
+          <td data-label="命中次数">
+            <div class="step-hit-cell">
+              <strong>${stat.hit_count} 次</strong>
+              <div class="step-hit-bar"><span style="width:${width}%;"></span></div>
+            </div>
+          </td>
+          <td data-label="命中日期">
+            <div class="step-date-list">${dateTags}</div>
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  return `
+    <div class="table-wrap">
+      <table class="step-table">
+        <thead>
+          <tr>
+            <th>价格档位</th>
+            <th>覆盖价格</th>
+            <th>命中次数</th>
+            <th>命中日期</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
 }
 
 function getLongestHitStreak(items) {
@@ -760,12 +825,15 @@ function exportXlsx() {
   if (summary.price_range_enabled) {
     overviewRows.push(["价格下限", summary.price_range_low]);
     overviewRows.push(["价格上限", summary.price_range_high]);
+    overviewRows.push(["统计步长", summary.price_step]);
     overviewRows.push(["命中次数", insights.hitCount]);
     overviewRows.push(["命中占比(%)", toPercentNumber(insights.hitRatio)]);
     overviewRows.push(["首次命中日期", insights.firstHitDate ? cnDate(insights.firstHitDate) : "-"]);
     overviewRows.push(["最近命中日期", insights.lastHitDate ? cnDate(insights.lastHitDate) : "-"]);
     overviewRows.push(["命中收盘价范围", insights.hitCloseRange]);
     overviewRows.push(["最长连续命中", insights.longestHitStreak]);
+    overviewRows.push(["命中档位数", insights.activeStepCount]);
+    overviewRows.push(["总档位数", insights.stepCount]);
     overviewRows.push(["命中日期列表", (summary.price_range_dates || []).map(cnDate).join("、") || "-"]);
   }
 
@@ -799,10 +867,24 @@ function exportXlsx() {
     ]),
   ];
 
+  const stepRows = [
+    ["价格档位", "覆盖价格", "命中次数", "命中占比（占命中交易日）", "命中日期"],
+    ...insights.stepStats.map((stat) => [
+      formatNumber(stat.price_point),
+      formatStepCoverage(stat),
+      stat.hit_count,
+      formatPercent(stat.hit_ratio),
+      stat.dates.length ? stat.dates.map(cnDate).join("、") : "未命中",
+    ]),
+  ];
+
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(overviewRows), "查询概览");
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(detailRows), "价格与命中明细");
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(turnoverRows), "换手率表格视图");
+  if (summary.price_range_enabled) {
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(stepRows), "步长分档统计");
+  }
   XLSX.writeFile(wb, `${filenameBase()}_查询结果.xlsx`);
 }
 
@@ -841,13 +923,13 @@ function renderEmptyState() {
         <h2>专项分析等待中</h2>
       </div>
     </div>
-    <div class="empty-box">填写价格下限和价格上限后，系统会把命中统计单独展示在这里。</div>
+    <div class="empty-box">填写价格下限、价格上限和步长后，系统会把整体命中情况与按档位拆分的日期明细展示在这里。</div>
   `;
 }
 
 function renderLoadingPanels() {
   els.overviewPanel.innerHTML = '<div class="muted-box">正在查询股票数据，请稍候……</div>';
-  els.rangeStatsPanel.innerHTML = '<div class="muted-box">正在生成价格区间专项统计……</div>';
+  els.rangeStatsPanel.innerHTML = '<div class="muted-box">正在生成价格区间与步长分档统计……</div>';
 }
 
 function setLoadingState(isLoading) {
@@ -884,6 +966,27 @@ function parseOptionalNumber(raw) {
   if (raw === "") return null;
   const value = Number(raw);
   return Number.isFinite(value) ? value : null;
+}
+
+function normalizePriceStepStats(stats) {
+  if (!Array.isArray(stats)) return [];
+
+  return stats.map((stat) => ({
+    price_point: Number.isFinite(stat?.price_point) ? Number(stat.price_point) : null,
+    range_start: Number.isFinite(stat?.range_start) ? Number(stat.range_start) : null,
+    range_end: Number.isFinite(stat?.range_end) ? Number(stat.range_end) : null,
+    is_exact_high_point: Boolean(stat?.is_exact_high_point),
+    hit_count: Number.isFinite(stat?.hit_count) ? Number(stat.hit_count) : 0,
+    hit_ratio: Number.isFinite(stat?.hit_ratio) ? Number(stat.hit_ratio) : 0,
+    dates: Array.isArray(stat?.dates) ? stat.dates.filter(isYmd) : [],
+  }));
+}
+
+function formatStepCoverage(stat) {
+  if (stat?.is_exact_high_point) {
+    return `收盘价 = ${formatNumber(stat.range_start)} 元`;
+  }
+  return `${formatNumber(stat.range_start)} 元 ≤ 收盘价 < ${formatNumber(stat.range_end)} 元`;
 }
 
 function normalizeInputDate(value) {
